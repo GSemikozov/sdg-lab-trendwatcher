@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { APP_CONFIG } from '@shared/config';
-import { getOpenAIAPIKey } from '@shared/config/ai';
-import { createAIService, createRedditService, reportStorage } from '@shared/api';
+import { reportStorage } from '@shared/api';
+import { supabase } from '@shared/api/supabase';
 import type { Report, SubredditConfig } from '@shared/lib/types';
 
 interface AppStore {
@@ -13,7 +13,7 @@ interface AppStore {
   subreddits: SubredditConfig[];
 
   loadReports: () => Promise<void>;
-  generateReport: () => Promise<{ success: boolean; error?: string; report?: Report }>;
+  generateReport: () => Promise<{ success: boolean; error?: string }>;
   deleteReport: (id: string) => Promise<void>;
   setSubreddits: (subreddits: SubredditConfig[]) => void;
   clearError: () => void;
@@ -55,27 +55,22 @@ export const useAppStore = create<AppStore>()(
               throw new Error('No subreddits enabled');
             }
 
-            const apiKey = getOpenAIAPIKey();
-            if (!apiKey) {
-              throw new Error('OpenAI API key not configured');
+            const { data, error } = await supabase.functions.invoke('daily-report', {
+              body: { subreddits: enabledSubs },
+            });
+
+            if (error) {
+              throw new Error(error.message || 'Edge Function call failed');
             }
 
-            const redditService = createRedditService();
-            const aiService = createAIService(apiKey);
-
-            const posts = await redditService.fetchMultipleSubreddits(enabledSubs);
-            if (posts.length === 0) {
-              throw new Error(
-                'No posts fetched from Reddit. This may be a CORS issue — use the Supabase Edge Function for production.'
-              );
+            if (!data?.success) {
+              throw new Error(data?.error || 'Report generation failed');
             }
 
-            const report = await aiService.analyzeRedditPosts(posts, enabledSubs);
+            const reports = await reportStorage.getAll();
+            set({ reports });
 
-            await reportStorage.save(report);
-            set((state) => ({ reports: [report, ...state.reports] }));
-
-            return { success: true, report };
+            return { success: true };
           } catch (err) {
             const message = err instanceof Error ? err.message : 'Failed to generate report';
             set({ error: message });

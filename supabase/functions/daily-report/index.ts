@@ -249,36 +249,66 @@ Deno.serve(async (req) => {
     const openaiKey = Deno.env.get('OPENAI_API_KEY');
     const resendKey = Deno.env.get('RESEND_API_KEY');
     const recipients = (Deno.env.get('EMAIL_RECIPIENTS') ?? '').split(',').filter(Boolean);
-    const subreddits = (Deno.env.get('SUBREDDITS') ?? 'lonely,depression,socialskills')
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+    let subreddits = (Deno.env.get('SUBREDDITS') ?? 'lonely,depression,socialskills')
       .split(',')
       .filter(Boolean);
 
+    if (req.method === 'POST') {
+      try {
+        const body = await req.json();
+        if (body.subreddits?.length > 0) {
+          subreddits = body.subreddits;
+        }
+      } catch {
+        // no body or invalid JSON — use defaults
+      }
+    }
+
     if (!openaiKey) {
-      return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not set' }), { status: 500 });
+      return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not set' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     console.log(`[daily-report] Fetching posts from: ${subreddits.join(', ')}`);
     const posts = await fetchAllSubreddits(subreddits);
     console.log(`[daily-report] Fetched ${posts.length} posts`);
 
+    if (posts.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'No posts fetched from Reddit' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     console.log('[daily-report] Running AI analysis...');
     const analysis = await analyzeWithOpenAI(posts, subreddits, openaiKey);
     console.log(`[daily-report] Found ${analysis.signals.length} signals`);
 
-    // Store in Supabase (optional, if DB is set up)
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const now = new Date().toISOString();
+    const rawPostCount: Record<string, number> = {};
+    for (const sub of subreddits) {
+      rawPostCount[sub] = posts.filter((p) => p.subreddit === sub).length;
+    }
+
     if (supabaseUrl && supabaseKey) {
       const report = {
         id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
+        created_at: now,
+        date_from: new Date(Date.now() - PERIOD_HOURS * 3600000).toISOString(),
+        date_to: now,
         subreddits,
-        total_posts: posts.length,
+        total_posts_analyzed: posts.length,
         summary: analysis.summary,
         signals: analysis.signals,
+        raw_post_count: rawPostCount,
       };
 
-      await fetch(`${supabaseUrl}/rest/v1/reports`, {
+      const dbRes = await fetch(`${supabaseUrl}/rest/v1/reports`, {
         method: 'POST',
         headers: {
           apikey: supabaseKey,
@@ -288,7 +318,13 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify(report),
       });
-      console.log('[daily-report] Report saved to database');
+
+      if (!dbRes.ok) {
+        const dbErr = await dbRes.text();
+        console.error('[daily-report] DB save error:', dbErr);
+      } else {
+        console.log('[daily-report] Report saved to database');
+      }
     }
 
     if (resendKey && recipients.length > 0) {

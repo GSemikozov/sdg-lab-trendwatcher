@@ -1,15 +1,49 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppStore } from './store';
 
+const mockReport = {
+  id: 'report-1',
+  created_at: new Date().toISOString(),
+  date_from: new Date().toISOString(),
+  date_to: new Date().toISOString(),
+  subreddits: ['lonely'],
+  total_posts_analyzed: 10,
+  summary: 'Test summary',
+  signals: [
+    {
+      id: 'sig-1',
+      category: 'emerging_topic',
+      title: 'Test signal',
+      description: 'Test description',
+      strength: 'high',
+      sentiment: 'mixed',
+      postCount: 5,
+      subreddits: ['lonely'],
+    },
+  ],
+  raw_post_count: { lonely: 10 },
+};
+
+const mockGetAll = vi.fn().mockResolvedValue([]);
+const mockDeleteFn = vi.fn().mockResolvedValue(undefined);
+
+vi.mock('@shared/api', () => ({
+  reportStorage: {
+    getAll: (...args: unknown[]) => mockGetAll(...args),
+    delete: (...args: unknown[]) => mockDeleteFn(...args),
+  },
+}));
+
+const mockInvoke = vi.fn();
+
 vi.mock('@shared/api/supabase', () => ({
   supabase: {
+    functions: {
+      invoke: (...args: unknown[]) => mockInvoke(...args),
+    },
     from: () => ({
-      insert: vi.fn().mockResolvedValue({ error: null }),
       select: vi.fn().mockReturnValue({
         order: vi.fn().mockResolvedValue({ data: [], error: null }),
-        eq: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: null, error: null }),
-        }),
       }),
       delete: vi.fn().mockReturnValue({
         eq: vi.fn().mockResolvedValue({ error: null }),
@@ -18,52 +52,9 @@ vi.mock('@shared/api/supabase', () => ({
   },
 }));
 
-vi.mock('@shared/api/reddit-service', () => ({
-  createRedditService: () => ({
-    fetchMultipleSubreddits: vi.fn().mockResolvedValue([
-      {
-        id: 'test1',
-        title: 'Test post',
-        selftext: 'Test body',
-        score: 100,
-        numComments: 50,
-        subreddit: 'lonely',
-        createdUtc: Date.now() / 1000,
-        permalink: '/r/lonely/test1',
-        topComments: [],
-      },
-    ]),
-  }),
-}));
-
-vi.mock('@shared/api/ai-service', () => ({
-  createAIService: () => ({
-    analyzeRedditPosts: vi.fn().mockResolvedValue({
-      id: 'report-1',
-      createdAt: new Date().toISOString(),
-      dateRange: { from: new Date().toISOString(), to: new Date().toISOString() },
-      subreddits: ['lonely'],
-      totalPostsAnalyzed: 1,
-      summary: 'Test summary',
-      signals: [
-        {
-          id: 'sig-1',
-          category: 'emerging_topic',
-          title: 'Test signal',
-          description: 'Test description',
-          strength: 'high',
-          sentiment: 'mixed',
-          postCount: 5,
-          subreddits: ['lonely'],
-        },
-      ],
-      rawPostCount: { lonely: 1 },
-    }),
-  }),
-}));
-
 describe('useAppStore', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useAppStore.setState({
       reports: [],
       isLoading: false,
@@ -79,15 +70,43 @@ describe('useAppStore', () => {
     expect(subreddits.every((s) => s.enabled)).toBe(true);
   });
 
-  it('should generate a report', async () => {
+  it('should generate a report via Edge Function', async () => {
+    mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
+    mockGetAll.mockResolvedValue([
+      {
+        id: 'report-1',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: new Date().toISOString(), to: new Date().toISOString() },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 10,
+        summary: 'Test summary',
+        signals: [mockReport.signals[0]],
+        rawPostCount: { lonely: 10 },
+      },
+    ]);
+
     const { generateReport } = useAppStore.getState();
     const result = await generateReport();
 
     expect(result.success).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith('daily-report', {
+      body: { subreddits: ['lonely', 'depression', 'socialskills'] },
+    });
 
     const { reports } = useAppStore.getState();
     expect(reports).toHaveLength(1);
     expect(reports[0].signals.length).toBeGreaterThan(0);
+  });
+
+  it('should handle Edge Function error', async () => {
+    mockInvoke.mockResolvedValue({ data: null, error: { message: 'Function failed' } });
+
+    const { generateReport } = useAppStore.getState();
+    const result = await generateReport();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Function failed');
+    expect(useAppStore.getState().error).toBe('Function failed');
   });
 
   it('should update subreddits', () => {
@@ -110,13 +129,25 @@ describe('useAppStore', () => {
   });
 
   it('should delete a report', async () => {
-    const { generateReport } = useAppStore.getState();
-    await generateReport();
+    useAppStore.setState({
+      reports: [
+        {
+          id: 'r1',
+          createdAt: new Date().toISOString(),
+          dateRange: { from: '', to: '' },
+          subreddits: ['lonely'],
+          totalPostsAnalyzed: 1,
+          summary: 'Test',
+          signals: [],
+          rawPostCount: { lonely: 1 },
+        },
+      ],
+    });
 
-    const { reports, deleteReport } = useAppStore.getState();
-    expect(reports).toHaveLength(1);
+    const { deleteReport } = useAppStore.getState();
+    await deleteReport('r1');
 
-    await deleteReport(reports[0].id);
+    expect(mockDeleteFn).toHaveBeenCalledWith('r1');
     expect(useAppStore.getState().reports).toHaveLength(0);
   });
 });
