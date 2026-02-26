@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { APP_CONFIG } from '@shared/config';
 import { reportStorage } from '@shared/api';
-import { supabase } from '@shared/api/supabase';
 import type { Report, SubredditConfig } from '@shared/lib/types';
 
 interface AppStore {
@@ -55,15 +54,15 @@ export const useAppStore = create<AppStore>()(
               throw new Error('No subreddits enabled');
             }
 
-            const { data, error } = await supabase.functions.invoke('daily-report', {
-              body: { subreddits: enabledSubs },
+            const res = await fetch('/.netlify/functions/generate-report', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ subreddits: enabledSubs }),
             });
 
-            if (error) {
-              throw new Error(error.message || 'Edge Function call failed');
-            }
+            const data = await res.json();
 
-            if (!data?.success) {
+            if (!res.ok || !data?.success) {
               throw new Error(data?.error || 'Report generation failed');
             }
 

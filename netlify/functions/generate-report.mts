@@ -1,34 +1,6 @@
-/**
- * Supabase Edge Function: daily-report
- *
- * Triggered by pg_cron (daily) or manual HTTP call.
- * Fetches Reddit posts → analyzes via OpenAI → stores report → sends email via Resend.
- *
- * Environment variables (set in Supabase dashboard):
- *   OPENAI_API_KEY    - OpenAI API key
- *   RESEND_API_KEY    - Resend API key
- *   EMAIL_RECIPIENTS  - Comma-separated email addresses
- *   SUBREDDITS        - Comma-separated subreddit names (default: lonely,depression,socialskills)
- *   SUPABASE_URL      - Auto-provided by Supabase
- *   SUPABASE_SERVICE_ROLE_KEY - Auto-provided by Supabase
- *
- * pg_cron setup (run in Supabase SQL Editor):
- *   select cron.schedule(
- *     'daily-trendwatcher-report',
- *     '0 9 * * *',  -- every day at 09:00 UTC
- *     $$
- *     select net.http_post(
- *       url := 'https://<project-ref>.supabase.co/functions/v1/daily-report',
- *       headers := jsonb_build_object(
- *         'Authorization', 'Bearer ' || current_setting('supabase.service_role_key')
- *       ),
- *       body := '{}'::jsonb
- *     );
- *     $$
- *   );
- */
+import type { Context } from '@netlify/functions';
 
-const REDDIT_BASE = 'https://api.reddit.com';
+const REDDIT_BASE = 'https://www.reddit.com';
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const RESEND_BASE = 'https://api.resend.com';
 const MAX_POSTS = 100;
@@ -72,28 +44,22 @@ async function fetchSubreddit(subreddit: string): Promise<RedditPost[]> {
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     console.error(`[reddit] r/${subreddit} HTTP ${res.status}: ${body.slice(0, 200)}`);
-    throw new Error(`Reddit error for r/${subreddit}: ${res.status}`);
+    throw new Error(`Reddit HTTP ${res.status} for r/${subreddit}`);
   }
 
   const data = await res.json();
   const children = data?.data?.children ?? [];
-  console.log(`[reddit] r/${subreddit}: ${children.length} raw posts`);
-
   const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
+
   const posts = children
     .filter((p: { data: RedditPost }) => p.data.created_utc > cutoff)
     .map((p: { data: RedditPost }) => p.data);
 
-  console.log(`[reddit] r/${subreddit}: ${posts.length} posts after ${PERIOD_HOURS}h cutoff`);
+  console.log(`[reddit] r/${subreddit}: ${children.length} raw → ${posts.length} after cutoff`);
   return posts;
 }
 
-interface FetchResult {
-  posts: RedditPost[];
-  errors: string[];
-}
-
-async function fetchAllSubreddits(subreddits: string[]): Promise<FetchResult> {
+async function fetchAllSubreddits(subreddits: string[]) {
   const results = await Promise.allSettled(subreddits.map(fetchSubreddit));
   const errors: string[] = [];
 
@@ -102,7 +68,6 @@ async function fetchAllSubreddits(subreddits: string[]): Promise<FetchResult> {
     if (r.status === 'rejected') {
       const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
       errors.push(`r/${subreddits[i]}: ${msg}`);
-      console.error(`[reddit] r/${subreddits[i]} failed:`, r.reason);
     }
   }
 
@@ -121,13 +86,13 @@ async function analyzeWithOpenAI(
   subreddits: string[],
   apiKey: string
 ): Promise<{ summary: string; signals: Signal[] }> {
-  const postsText = posts
-    .slice(0, 200)
-    .map(
-      (p) =>
-        `[r/${p.subreddit}] (score:${p.score}, comments:${p.num_comments}) ${p.title}\n${p.selftext?.slice(0, 200) || ''}`
-    )
-    .join('\n---\n');
+  const postSummaries = posts.slice(0, 80).map((p) => ({
+    sub: p.subreddit,
+    title: p.title,
+    text: p.selftext?.slice(0, 300) || '',
+    score: p.score,
+    comments: p.num_comments,
+  }));
 
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
@@ -137,16 +102,15 @@ async function analyzeWithOpenAI(
     },
     body: JSON.stringify({
       model: 'gpt-4o-mini',
-      response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: `Analyze ${posts.length} posts from ${subreddits.join(', ')} (last 48h):\n\n${postsText}`,
+          content: `Analyze ${posts.length} posts from ${subreddits.map((s) => `r/${s}`).join(', ')}:\n\n${JSON.stringify(postSummaries)}`,
         },
       ],
-      max_tokens: 4000,
       temperature: 0.3,
+      response_format: { type: 'json_object' },
     }),
   });
 
@@ -156,17 +120,64 @@ async function analyzeWithOpenAI(
   }
 
   const data = await res.json();
-  return JSON.parse(data.choices[0].message.content);
+  const content = data.choices?.[0]?.message?.content ?? '{}';
+  return JSON.parse(content);
+}
+
+// --- Supabase ---
+
+async function saveReport(
+  report: Record<string, unknown>,
+  supabaseUrl: string,
+  supabaseKey: string
+) {
+  const res = await fetch(`${supabaseUrl}/rest/v1/reports`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(report),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[db] Save error:', err);
+    throw new Error(`DB save failed: ${res.status}`);
+  }
 }
 
 // --- Email ---
+
+const strengthColor: Record<string, string> = {
+  high: '#ef4444',
+  medium: '#f59e0b',
+  low: '#22c55e',
+};
+
+const categoryLabel: Record<string, string> = {
+  emerging_topic: 'Emerging Topics',
+  growing_trend: 'Growing Trends',
+  pain_point: 'Pain Points',
+  hypothesis: 'Product Hypotheses',
+};
+
+const categoryEmoji: Record<string, string> = {
+  emerging_topic: '🆕',
+  growing_trend: '📈',
+  pain_point: '🔴',
+  hypothesis: '💡',
+};
 
 function buildEmailHtml(
   summary: string,
   signals: Signal[],
   totalPosts: number,
   subreddits: string[]
-): string {
+) {
+  const categories = ['emerging_topic', 'growing_trend', 'pain_point', 'hypothesis'];
   const date = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -174,32 +185,10 @@ function buildEmailHtml(
     day: 'numeric',
   });
 
-  const categoryEmoji: Record<string, string> = {
-    emerging_topic: '🆕',
-    growing_trend: '📈',
-    pain_point: '😰',
-    hypothesis: '💡',
-  };
-
-  const categoryLabel: Record<string, string> = {
-    emerging_topic: 'NEW EMERGING TOPICS',
-    growing_trend: 'GROWING TRENDS',
-    pain_point: 'PAIN POINTS',
-    hypothesis: 'PRODUCT HYPOTHESES',
-  };
-
-  const strengthColor: Record<string, string> = {
-    high: '#ef4444',
-    medium: '#f59e0b',
-    low: '#22c55e',
-  };
-
-  const categories = ['emerging_topic', 'growing_trend', 'pain_point', 'hypothesis'];
   const sections = categories
+    .filter((cat) => signals.some((s) => s.category === cat))
     .map((cat) => {
       const catSignals = signals.filter((s) => s.category === cat);
-      if (catSignals.length === 0) return '';
-
       const items = catSignals
         .map(
           (s) => `
@@ -243,11 +232,7 @@ function buildEmailHtml(
 </div></body></html>`;
 }
 
-async function sendEmail(
-  html: string,
-  recipients: string[],
-  apiKey: string
-): Promise<void> {
+async function sendEmail(html: string, recipients: string[], apiKey: string) {
   const date = new Date().toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -261,9 +246,9 @@ async function sendEmail(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: 'TrendWatcher <reports@sdglab.dev>',
+      from: 'TrendWatcher <onboarding@resend.dev>',
       to: recipients,
-      subject: `📊 TrendWatcher Report — ${date}`,
+      subject: `📊 TrendWatcher Daily Report — ${date}`,
       html,
     }),
   });
@@ -276,15 +261,15 @@ async function sendEmail(
 
 // --- Handler ---
 
-Deno.serve(async (req) => {
+export default async (req: Request, _context: Context) => {
   try {
-    const openaiKey = Deno.env.get('OPENAI_API_KEY');
-    const resendKey = Deno.env.get('RESEND_API_KEY');
-    const recipients = (Deno.env.get('EMAIL_RECIPIENTS') ?? '').split(',').filter(Boolean);
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const openaiKey = process.env.OPENAI_API_KEY;
+    const resendKey = process.env.RESEND_API_KEY;
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const recipients = (process.env.EMAIL_RECIPIENTS ?? '').split(',').filter(Boolean);
 
-    let subreddits = (Deno.env.get('SUBREDDITS') ?? 'lonely,depression,socialskills')
+    let subreddits = (process.env.SUBREDDITS ?? 'lonely,depression,socialskills')
       .split(',')
       .filter(Boolean);
 
@@ -295,7 +280,7 @@ Deno.serve(async (req) => {
           subreddits = body.subreddits;
         }
       } catch {
-        // no body or invalid JSON — use defaults
+        // no body — use defaults
       }
     }
 
@@ -306,24 +291,20 @@ Deno.serve(async (req) => {
       });
     }
 
-    console.log(`[daily-report] Fetching posts from: ${subreddits.join(', ')}`);
+    console.log(`[report] Fetching from: ${subreddits.join(', ')}`);
     const { posts, errors: redditErrors } = await fetchAllSubreddits(subreddits);
-    console.log(`[daily-report] Fetched ${posts.length} posts, ${redditErrors.length} errors`);
+    console.log(`[report] ${posts.length} posts, ${redditErrors.length} errors`);
 
     if (posts.length === 0) {
       return new Response(
-        JSON.stringify({
-          error: 'No posts fetched from Reddit',
-          redditErrors,
-          subreddits,
-        }),
+        JSON.stringify({ error: 'No posts fetched from Reddit', redditErrors, subreddits }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log('[daily-report] Running AI analysis...');
+    console.log('[report] Running AI analysis...');
     const analysis = await analyzeWithOpenAI(posts, subreddits, openaiKey);
-    console.log(`[daily-report] Found ${analysis.signals.length} signals`);
+    console.log(`[report] ${analysis.signals.length} signals found`);
 
     const now = new Date().toISOString();
     const rawPostCount: Record<string, number> = {};
@@ -344,31 +325,14 @@ Deno.serve(async (req) => {
         raw_post_count: rawPostCount,
       };
 
-      const dbRes = await fetch(`${supabaseUrl}/rest/v1/reports`, {
-        method: 'POST',
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=minimal',
-        },
-        body: JSON.stringify(report),
-      });
-
-      if (!dbRes.ok) {
-        const dbErr = await dbRes.text();
-        console.error('[daily-report] DB save error:', dbErr);
-      } else {
-        console.log('[daily-report] Report saved to database');
-      }
+      await saveReport(report, supabaseUrl, supabaseKey);
+      console.log('[report] Saved to database');
     }
 
     if (resendKey && recipients.length > 0) {
       const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits);
       await sendEmail(html, recipients, resendKey);
-      console.log(`[daily-report] Email sent to: ${recipients.join(', ')}`);
-    } else {
-      console.log('[daily-report] Skipping email (no key or no recipients)');
+      console.log(`[report] Email sent to: ${recipients.join(', ')}`);
     }
 
     return new Response(
@@ -381,10 +345,10 @@ Deno.serve(async (req) => {
       { headers: { 'Content-Type': 'application/json' } }
     );
   } catch (err) {
-    console.error('[daily-report] Error:', err);
+    console.error('[report] Error:', err);
     return new Response(
       JSON.stringify({ error: err instanceof Error ? err.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
-});
+};
