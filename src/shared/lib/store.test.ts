@@ -34,8 +34,15 @@ vi.mock('@shared/api', () => ({
   },
 }));
 
-const mockFetch = vi.fn();
-globalThis.fetch = mockFetch;
+const mockInvoke = vi.fn();
+
+vi.mock('@shared/api/supabase', () => ({
+  supabase: {
+    functions: {
+      invoke: (...args: unknown[]) => mockInvoke(...args),
+    },
+  },
+}));
 
 describe('useAppStore', () => {
   beforeEach(() => {
@@ -55,11 +62,8 @@ describe('useAppStore', () => {
     expect(subreddits.every((s) => s.enabled)).toBe(true);
   });
 
-  it('should generate a report via Netlify Function', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ success: true, postsAnalyzed: 10, signalsFound: 3 }),
-    });
+  it('should generate a report via Edge Function', async () => {
+    mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
     mockGetAll.mockResolvedValue([
       {
         id: 'report-1',
@@ -77,23 +81,17 @@ describe('useAppStore', () => {
     const result = await generateReport();
 
     expect(result.success).toBe(true);
-    expect(mockFetch).toHaveBeenCalledWith(
-      '/.netlify/functions/generate-report',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ subreddits: ['lonely', 'depression', 'socialskills'] }),
-      })
-    );
+    expect(mockInvoke).toHaveBeenCalledWith('daily-report', {
+      body: { subreddits: ['lonely', 'depression', 'socialskills'] },
+    });
 
     const { reports } = useAppStore.getState();
     expect(reports).toHaveLength(1);
+    expect(reports[0].signals.length).toBeGreaterThan(0);
   });
 
-  it('should handle function error', async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      json: () => Promise.resolve({ error: 'Function failed' }),
-    });
+  it('should handle Edge Function error', async () => {
+    mockInvoke.mockResolvedValue({ data: null, error: { message: 'Function failed' } });
 
     const { generateReport } = useAppStore.getState();
     const result = await generateReport();
