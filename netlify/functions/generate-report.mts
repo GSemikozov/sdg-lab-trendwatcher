@@ -30,16 +30,55 @@ interface Signal {
 
 // --- Reddit ---
 
-async function fetchSubreddit(subreddit: string): Promise<RedditPost[]> {
-  const url = `${REDDIT_BASE}/r/${subreddit}/hot.json?limit=${MAX_POSTS}&raw_json=1`;
-  console.log(`[reddit] Fetching ${url}`);
+let cachedToken: { token: string; expiresAt: number } | null = null;
 
-  const res = await fetch(url, {
+async function getRedditOAuthToken(clientId: string, clientSecret: string): Promise<string> {
+  if (cachedToken && Date.now() < cachedToken.expiresAt) {
+    return cachedToken.token;
+  }
+
+  const res = await fetch('https://www.reddit.com/api/v1/access_token', {
+    method: 'POST',
     headers: {
+      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
       'User-Agent': 'web:TrendWatcher:v1.0 (by /u/sdglab)',
-      Accept: 'application/json',
     },
+    body: 'grant_type=client_credentials',
   });
+
+  if (!res.ok) {
+    throw new Error(`Reddit OAuth failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  cachedToken = {
+    token: data.access_token,
+    expiresAt: Date.now() + (data.expires_in - 60) * 1000,
+  };
+
+  console.log('[reddit] OAuth token acquired');
+  return cachedToken.token;
+}
+
+async function fetchSubreddit(
+  subreddit: string,
+  oauthToken?: string
+): Promise<RedditPost[]> {
+  const useOAuth = !!oauthToken;
+  const base = useOAuth ? 'https://oauth.reddit.com' : REDDIT_BASE;
+  const url = `${base}/r/${subreddit}/hot.json?limit=${MAX_POSTS}&raw_json=1`;
+  console.log(`[reddit] Fetching ${url} (oauth: ${useOAuth})`);
+
+  const headers: Record<string, string> = {
+    'User-Agent': 'web:TrendWatcher:v1.0 (by /u/sdglab)',
+    Accept: 'application/json',
+  };
+  if (oauthToken) {
+    headers.Authorization = `Bearer ${oauthToken}`;
+  }
+
+  const res = await fetch(url, { headers });
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -59,8 +98,10 @@ async function fetchSubreddit(subreddit: string): Promise<RedditPost[]> {
   return posts;
 }
 
-async function fetchAllSubreddits(subreddits: string[]) {
-  const results = await Promise.allSettled(subreddits.map(fetchSubreddit));
+async function fetchAllSubreddits(subreddits: string[], oauthToken?: string) {
+  const results = await Promise.allSettled(
+    subreddits.map((sub) => fetchSubreddit(sub, oauthToken))
+  );
   const errors: string[] = [];
 
   for (let i = 0; i < results.length; i++) {
@@ -284,6 +325,9 @@ export default async (req: Request, _context: Context) => {
       }
     }
 
+    const redditClientId = process.env.REDDIT_CLIENT_ID;
+    const redditClientSecret = process.env.REDDIT_CLIENT_SECRET;
+
     if (!openaiKey) {
       return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not set' }), {
         status: 500,
@@ -291,8 +335,19 @@ export default async (req: Request, _context: Context) => {
       });
     }
 
+    let oauthToken: string | undefined;
+    if (redditClientId && redditClientSecret) {
+      try {
+        oauthToken = await getRedditOAuthToken(redditClientId, redditClientSecret);
+      } catch (err) {
+        console.error('[reddit] OAuth failed, falling back to unauthenticated:', err);
+      }
+    } else {
+      console.log('[reddit] No OAuth credentials — using unauthenticated access');
+    }
+
     console.log(`[report] Fetching from: ${subreddits.join(', ')}`);
-    const { posts, errors: redditErrors } = await fetchAllSubreddits(subreddits);
+    const { posts, errors: redditErrors } = await fetchAllSubreddits(subreddits, oauthToken);
     console.log(`[report] ${posts.length} posts, ${redditErrors.length} errors`);
 
     if (posts.length === 0) {

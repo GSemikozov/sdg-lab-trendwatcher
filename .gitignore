@@ -5,3 +5,6 @@ build
 *.local
 .DS_Store
 *.tsbuildinfo
+
+# Local Netlify folder
+.netlify
