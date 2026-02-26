@@ -97,40 +97,125 @@ async function getRedditOAuthToken(
 
 // --- Reddit Fetch ---
 
+function parseRedditJson(json: Record<string, unknown>): RedditPost[] {
+  const children = (json as { data?: { children?: { data: RedditPost }[] } })
+    ?.data?.children ?? [];
+
+  const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
+  const posts = children
+    .filter((p) => p.data.created_utc > cutoff)
+    .map((p) => p.data);
+
+  return posts;
+}
+
+async function fetchWithOAuth(
+  subreddit: string,
+  token: string
+): Promise<RedditPost[]> {
+  const url = `${REDDIT_OAUTH_BASE}/r/${subreddit}/hot.json?limit=${MAX_POSTS}&raw_json=1`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': USER_AGENT,
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!res.ok) throw new Error(`OAuth fetch r/${subreddit}: ${res.status}`);
+  return parseRedditJson(await res.json());
+}
+
+async function fetchDirect(subreddit: string): Promise<RedditPost[]> {
+  const url = `${REDDIT_BASE}/r/${subreddit}/hot.json?limit=${MAX_POSTS}&raw_json=1`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error(`Direct fetch r/${subreddit}: ${res.status}`);
+  return parseRedditJson(await res.json());
+}
+
+function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
+  const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
+  const posts: RedditPost[] = [];
+
+  const entries = xml.split('<entry>').slice(1);
+  for (const entry of entries) {
+    const title = entry.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"') ?? '';
+    const id = entry.match(/<id>.*?\/comments\/([\w]+)/)?.[1] ?? crypto.randomUUID();
+    const link = entry.match(/<link href="([^"]+)"/)?.[1] ?? '';
+    const updated = entry.match(/<updated>([\s\S]*?)<\/updated>/)?.[1];
+    const content = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] ?? '';
+
+    const textContent = content
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 500);
+
+    const createdUtc = updated ? new Date(updated).getTime() / 1000 : 0;
+    if (createdUtc < cutoff) continue;
+
+    posts.push({
+      id,
+      title,
+      selftext: textContent,
+      score: 0,
+      num_comments: 0,
+      subreddit,
+      created_utc: createdUtc,
+      permalink: link.replace('https://www.reddit.com', ''),
+    });
+  }
+
+  return posts;
+}
+
+async function fetchViaRss(subreddit: string): Promise<RedditPost[]> {
+  const url = `${REDDIT_BASE}/r/${subreddit}/hot.rss`;
+  console.log(`[reddit] Trying RSS for r/${subreddit}`);
+
+  const res = await fetch(url, {
+    headers: { 'User-Agent': `${USER_AGENT} RSS`, Accept: 'application/atom+xml,application/xml' },
+  });
+  if (!res.ok) throw new Error(`RSS fetch r/${subreddit}: ${res.status}`);
+
+  const xml = await res.text();
+  const posts = parseRssPosts(xml, subreddit);
+  console.log(`[reddit] r/${subreddit}: RSS parsed ${posts.length} posts`);
+  return posts;
+}
+
 async function fetchSubreddit(
   subreddit: string,
   oauthToken?: string
 ): Promise<RedditPost[]> {
-  const base = oauthToken ? REDDIT_OAUTH_BASE : REDDIT_BASE;
-  const url = `${base}/r/${subreddit}/hot.json?limit=${MAX_POSTS}&raw_json=1`;
-  console.log(`[reddit] Fetching r/${subreddit} (oauth: ${!!oauthToken})`);
-
-  const headers: Record<string, string> = {
-    'User-Agent': USER_AGENT,
-    Accept: 'application/json',
-  };
+  // Strategy 1: OAuth (production, bypasses IP blocks)
   if (oauthToken) {
-    headers.Authorization = `Bearer ${oauthToken}`;
+    console.log(`[reddit] r/${subreddit}: trying OAuth`);
+    try {
+      const posts = await fetchWithOAuth(subreddit, oauthToken);
+      console.log(`[reddit] r/${subreddit}: OAuth OK, ${posts.length} posts`);
+      return posts;
+    } catch (err) {
+      console.error(`[reddit] r/${subreddit}: OAuth failed:`, err);
+    }
   }
 
-  const res = await fetch(url, { headers });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    console.error(`[reddit] r/${subreddit} HTTP ${res.status}: ${body.slice(0, 200)}`);
-    throw new Error(`Reddit error for r/${subreddit}: ${res.status}`);
+  // Strategy 2: Direct (works locally, blocked from cloud IPs)
+  console.log(`[reddit] r/${subreddit}: trying direct`);
+  try {
+    const posts = await fetchDirect(subreddit);
+    console.log(`[reddit] r/${subreddit}: direct OK, ${posts.length} posts`);
+    return posts;
+  } catch (err) {
+    console.error(`[reddit] r/${subreddit}: direct failed:`, err);
   }
 
-  const data = await res.json();
-  const children = data?.data?.children ?? [];
-  console.log(`[reddit] r/${subreddit}: ${children.length} raw posts`);
-
-  const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
-  const posts = children
-    .filter((p: { data: RedditPost }) => p.data.created_utc > cutoff)
-    .map((p: { data: RedditPost }) => p.data);
-
-  console.log(`[reddit] r/${subreddit}: ${posts.length} posts after ${PERIOD_HOURS}h cutoff`);
+  // Strategy 3: RSS feed fallback (MVP workaround for cloud IPs)
+  console.log(`[reddit] r/${subreddit}: trying RSS fallback`);
+  const posts = await fetchViaRss(subreddit);
+  console.log(`[reddit] r/${subreddit}: RSS OK, ${posts.length} posts`);
   return posts;
 }
 
