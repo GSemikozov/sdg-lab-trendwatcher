@@ -1,5 +1,4 @@
 import { SubredditPicker } from '@features/configure-subreddits';
-import { getAIServiceType, getOpenAIAPIKey } from '@shared/config/ai';
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@shared/ui';
 import {
   ArrowLeft,
@@ -11,8 +10,6 @@ import {
 import { Link } from 'react-router-dom';
 
 export function SettingsPage() {
-  const aiType = getAIServiceType();
-  const hasKey = !!getOpenAIAPIKey();
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 
   return (
@@ -59,13 +56,13 @@ export function SettingsPage() {
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-3">
-              <Badge variant={aiType === 'openai' && hasKey ? 'success' : 'danger'}>
-                {aiType === 'openai' && hasKey ? 'OpenAI connected' : 'Not configured'}
+              <Badge variant={supabaseUrl ? 'success' : 'danger'}>
+                {supabaseUrl ? 'OpenAI via Edge Function' : 'Not configured'}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {aiType === 'openai' && hasKey
-                  ? 'Using gpt-4o-mini for analysis'
-                  : 'Set VITE_AI_SERVICE_TYPE=openai and VITE_OPENAI_API_KEY in .env'}
+                {supabaseUrl
+                  ? 'gpt-4o-mini — API key secured server-side'
+                  : 'Connect Supabase to enable AI analysis'}
               </span>
             </div>
           </CardContent>

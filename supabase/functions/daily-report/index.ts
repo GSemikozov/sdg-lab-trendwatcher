@@ -60,22 +60,54 @@ interface Signal {
 
 async function fetchSubreddit(subreddit: string): Promise<RedditPost[]> {
   const url = `${REDDIT_BASE}/r/${subreddit}/hot.json?limit=${MAX_POSTS}&raw_json=1`;
+  console.log(`[reddit] Fetching ${url}`);
+
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'TrendWatcher/1.0 (Supabase Edge Function)' },
+    headers: {
+      'User-Agent': 'web:TrendWatcher:v1.0 (by /u/sdglab)',
+      Accept: 'application/json',
+    },
   });
-  if (!res.ok) throw new Error(`Reddit error for r/${subreddit}: ${res.status}`);
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.error(`[reddit] r/${subreddit} HTTP ${res.status}: ${body.slice(0, 200)}`);
+    throw new Error(`Reddit error for r/${subreddit}: ${res.status}`);
+  }
 
   const data = await res.json();
-  const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
+  const children = data?.data?.children ?? [];
+  console.log(`[reddit] r/${subreddit}: ${children.length} raw posts`);
 
-  return data.data.children
+  const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
+  const posts = children
     .filter((p: { data: RedditPost }) => p.data.created_utc > cutoff)
     .map((p: { data: RedditPost }) => p.data);
+
+  console.log(`[reddit] r/${subreddit}: ${posts.length} posts after ${PERIOD_HOURS}h cutoff`);
+  return posts;
 }
 
-async function fetchAllSubreddits(subreddits: string[]): Promise<RedditPost[]> {
+interface FetchResult {
+  posts: RedditPost[];
+  errors: string[];
+}
+
+async function fetchAllSubreddits(subreddits: string[]): Promise<FetchResult> {
   const results = await Promise.allSettled(subreddits.map(fetchSubreddit));
-  return results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+  const errors: string[] = [];
+
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === 'rejected') {
+      const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      errors.push(`r/${subreddits[i]}: ${msg}`);
+      console.error(`[reddit] r/${subreddits[i]} failed:`, r.reason);
+    }
+  }
+
+  const posts = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+  return { posts, errors };
 }
 
 // --- OpenAI ---
@@ -275,12 +307,16 @@ Deno.serve(async (req) => {
     }
 
     console.log(`[daily-report] Fetching posts from: ${subreddits.join(', ')}`);
-    const posts = await fetchAllSubreddits(subreddits);
-    console.log(`[daily-report] Fetched ${posts.length} posts`);
+    const { posts, errors: redditErrors } = await fetchAllSubreddits(subreddits);
+    console.log(`[daily-report] Fetched ${posts.length} posts, ${redditErrors.length} errors`);
 
     if (posts.length === 0) {
       return new Response(
-        JSON.stringify({ error: 'No posts fetched from Reddit' }),
+        JSON.stringify({
+          error: 'No posts fetched from Reddit',
+          redditErrors,
+          subreddits,
+        }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
     }
