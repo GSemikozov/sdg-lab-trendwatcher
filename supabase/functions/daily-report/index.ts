@@ -31,7 +31,7 @@
 const REDDIT_BASE = 'https://www.reddit.com';
 const REDDIT_OAUTH_BASE = 'https://oauth.reddit.com';
 const OPENAI_BASE = 'https://api.openai.com/v1';
-const RESEND_BASE = 'https://api.resend.com';
+const BREVO_BASE = 'https://api.brevo.com/v3';
 const MAX_POSTS = 100;
 const PERIOD_HOURS = 48;
 const USER_AGENT = 'web:TrendWatcher:v1.0 (by /u/sdglab)';
@@ -382,7 +382,8 @@ function buildEmailHtml(
 async function sendEmail(
   html: string,
   recipients: string[],
-  apiKey: string
+  apiKey: string,
+  senderEmail: string
 ): Promise<void> {
   const date = new Date().toLocaleDateString('en-US', {
     month: 'short',
@@ -390,23 +391,23 @@ async function sendEmail(
     year: 'numeric',
   });
 
-  const res = await fetch(`${RESEND_BASE}/emails`, {
+  const res = await fetch(`${BREVO_BASE}/smtp/email`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      'api-key': apiKey,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: 'TrendWatcher <onboarding@resend.dev>',
-      to: recipients,
+      sender: { name: 'TrendWatcher', email: senderEmail },
+      to: recipients.map((email) => ({ email })),
       subject: `📊 TrendWatcher Report — ${date}`,
-      html,
+      htmlContent: html,
     }),
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Resend error ${res.status}: ${err}`);
+    throw new Error(`Brevo error ${res.status}: ${err}`);
   }
 }
 
@@ -415,7 +416,8 @@ async function sendEmail(
 Deno.serve(async (req) => {
   try {
     const openaiKey = Deno.env.get('OPENAI_API_KEY');
-    const resendKey = Deno.env.get('RESEND_API_KEY');
+    const brevoKey = Deno.env.get('BREVO_API_KEY');
+    const senderEmail = Deno.env.get('EMAIL_SENDER') ?? 'trendwatcher@sdglab.dev';
     const recipients = (Deno.env.get('EMAIL_RECIPIENTS') ?? '').split(',').filter(Boolean);
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -514,10 +516,10 @@ Deno.serve(async (req) => {
     }
 
     let emailSent = false;
-    if (resendKey && recipients.length > 0) {
+    if (brevoKey && recipients.length > 0) {
       try {
         const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits);
-        await sendEmail(html, recipients, resendKey);
+        await sendEmail(html, recipients, brevoKey, senderEmail);
         emailSent = true;
         console.log(`[daily-report] Email sent to: ${recipients.join(', ')}`);
       } catch (emailErr) {
