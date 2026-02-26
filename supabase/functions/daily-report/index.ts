@@ -397,7 +397,7 @@ async function sendEmail(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: 'TrendWatcher <reports@sdglab.dev>',
+      from: 'TrendWatcher <onboarding@resend.dev>',
       to: recipients,
       subject: `📊 TrendWatcher Report — ${date}`,
       html,
@@ -513,10 +513,16 @@ Deno.serve(async (req) => {
       }
     }
 
+    let emailSent = false;
     if (resendKey && recipients.length > 0) {
-      const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits);
-      await sendEmail(html, recipients, resendKey);
-      console.log(`[daily-report] Email sent to: ${recipients.join(', ')}`);
+      try {
+        const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits);
+        await sendEmail(html, recipients, resendKey);
+        emailSent = true;
+        console.log(`[daily-report] Email sent to: ${recipients.join(', ')}`);
+      } catch (emailErr) {
+        console.error('[daily-report] Email failed (non-blocking):', emailErr);
+      }
     } else {
       console.log('[daily-report] Skipping email (no key or no recipients)');
     }
@@ -526,7 +532,7 @@ Deno.serve(async (req) => {
         success: true,
         postsAnalyzed: posts.length,
         signalsFound: analysis.signals.length,
-        emailSent: !!(resendKey && recipients.length > 0),
+        emailSent,
       }),
       { headers: { 'Content-Type': 'application/json' } }
     );
