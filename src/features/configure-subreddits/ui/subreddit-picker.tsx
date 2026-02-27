@@ -53,30 +53,38 @@ export function SubredditPicker() {
     <div className="space-y-4">
       <div>
         <h3 className="mb-2 text-sm font-medium text-foreground">Active subreddits</h3>
-        <div className="flex flex-wrap gap-2">
-          {subreddits.map((sub) => (
-            <button
-              key={sub.name}
-              type="button"
-              onClick={() => toggleSubreddit(sub.name)}
-              className="group flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-sm transition-colors hover:border-primary/50 cursor-pointer"
-            >
-              <span
-                className={`h-2 w-2 rounded-full ${sub.enabled ? 'bg-trend-up' : 'bg-muted-foreground'}`}
-              />
-              <span className={sub.enabled ? 'text-foreground' : 'text-muted-foreground'}>
-                r/{sub.name}
-              </span>
-              <X
-                className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeSubreddit(sub.name);
-                }}
-              />
-            </button>
-          ))}
-        </div>
+        {subreddits.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-signal-medium/40 bg-signal-medium/5 px-4 py-3">
+            <p className="text-sm text-signal-medium">
+              No subreddits selected. Add at least one to generate reports.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {subreddits.map((sub) => (
+              <button
+                key={sub.name}
+                type="button"
+                onClick={() => toggleSubreddit(sub.name)}
+                className="group flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-sm transition-colors hover:border-primary/50 cursor-pointer"
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${sub.enabled ? 'bg-trend-up' : 'bg-muted-foreground'}`}
+                />
+                <span className={sub.enabled ? 'text-foreground' : 'text-muted-foreground'}>
+                  r/{sub.name}
+                </span>
+                <X
+                  className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeSubreddit(sub.name);
+                  }}
+                />
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {suggestionsToShow.length > 0 && (

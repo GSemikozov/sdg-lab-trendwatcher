@@ -68,6 +68,14 @@ export function DashboardPage() {
       </header>
 
       <main className="mx-auto max-w-7xl px-6 py-6">
+        {!useAppStore((s) => s.subreddits.some((sub) => sub.enabled)) && (
+          <div className="mb-4 flex items-center justify-between rounded-lg border border-signal-medium/30 bg-signal-medium/10 px-4 py-3 text-sm text-signal-medium">
+            <span>No subreddits enabled — configure at least one to generate reports.</span>
+            <Link to="/settings" className="font-medium hover:underline">
+              Go to Settings
+            </Link>
+          </div>
+        )}
         {error && (
           <div className="mb-4 flex items-center justify-between rounded-lg border border-signal-high/30 bg-signal-high/10 px-4 py-3 text-sm text-signal-high">
             <span>{error}</span>
