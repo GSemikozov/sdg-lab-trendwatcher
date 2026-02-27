@@ -11,11 +11,13 @@ interface AppStore {
   isGenerating: boolean;
   error: string | null;
   subreddits: SubredditConfig[];
+  emailRecipients: string[];
 
   loadReports: () => Promise<void>;
   generateReport: () => Promise<{ success: boolean; error?: string }>;
   deleteReport: (id: string) => Promise<void>;
   setSubreddits: (subreddits: SubredditConfig[]) => void;
+  setEmailRecipients: (emails: string[]) => void;
   clearError: () => void;
 }
 
@@ -32,6 +34,7 @@ export const useAppStore = create<AppStore>()(
           enabled: true,
           category: 'core',
         })),
+        emailRecipients: [],
 
         loadReports: async () => {
           set({ isLoading: true, error: null });
@@ -55,8 +58,14 @@ export const useAppStore = create<AppStore>()(
               throw new Error('No subreddits enabled');
             }
 
+            const { emailRecipients } = get();
+            const body: Record<string, unknown> = { subreddits: enabledSubs };
+            if (emailRecipients.length > 0) {
+              body.emailRecipients = emailRecipients;
+            }
+
             const { data, error } = await supabase.functions.invoke('daily-report', {
-              body: { subreddits: enabledSubs },
+              body,
             });
 
             if (error) {
@@ -93,12 +102,14 @@ export const useAppStore = create<AppStore>()(
         },
 
         setSubreddits: (subreddits) => set({ subreddits }),
+        setEmailRecipients: (emailRecipients) => set({ emailRecipients }),
         clearError: () => set({ error: null }),
       }),
       {
         name: 'trendwatcher-store',
         partialize: (state) => ({
           subreddits: state.subreddits,
+          emailRecipients: state.emailRecipients,
         }),
       }
     ),

@@ -428,7 +428,7 @@ Deno.serve(async (req) => {
     const openaiKey = Deno.env.get('OPENAI_API_KEY');
     const brevoKey = Deno.env.get('BREVO_API_KEY');
     const senderEmail = Deno.env.get('EMAIL_SENDER') ?? 'trendwatcher@sdglab.dev';
-    const recipients = (Deno.env.get('EMAIL_RECIPIENTS') ?? '').split(',').filter(Boolean);
+    let recipients = (Deno.env.get('EMAIL_RECIPIENTS') ?? '').split(',').filter(Boolean);
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
@@ -441,6 +441,9 @@ Deno.serve(async (req) => {
         const body = await req.json();
         if (body.subreddits?.length > 0) {
           subreddits = body.subreddits;
+        }
+        if (Array.isArray(body.emailRecipients) && body.emailRecipients.length > 0) {
+          recipients = body.emailRecipients;
         }
       } catch {
         // no body or invalid JSON — use defaults

@@ -1,8 +1,10 @@
+import { EmailRecipients } from '@features/configure-email';
 import { SubredditPicker } from '@features/configure-subreddits';
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@shared/ui';
 import {
   ArrowLeft,
   Database,
+  Mail,
   Radio,
   Settings,
   Zap,
@@ -43,6 +45,21 @@ export function SettingsPage() {
           </CardHeader>
           <CardContent>
             <SubredditPicker />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Mail className="h-5 w-5 text-primary" />
+              <CardTitle>Email Recipients</CardTitle>
+            </div>
+            <CardDescription>
+              Who receives the daily TrendWatcher report via email
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <EmailRecipients />
           </CardContent>
         </Card>
 
