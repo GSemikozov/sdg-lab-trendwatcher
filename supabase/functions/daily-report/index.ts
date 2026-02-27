@@ -454,7 +454,16 @@ async function sendEmail(
 
 // --- Handler ---
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
 Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+
   try {
     const openaiKey = Deno.env.get('OPENAI_API_KEY');
     const brevoKey = Deno.env.get('BREVO_API_KEY');
@@ -515,7 +524,7 @@ Deno.serve(async (req) => {
     if (!openaiKey) {
       return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not set' }), {
         status: 500,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
@@ -541,7 +550,7 @@ Deno.serve(async (req) => {
           redditErrors,
           subreddits,
         }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -611,13 +620,13 @@ Deno.serve(async (req) => {
         signalsFound: analysis.signals.length,
         emailSent,
       }),
-      { headers: { 'Content-Type': 'application/json' } }
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (err) {
     console.error('[daily-report] Error:', err);
     return new Response(
       JSON.stringify({ error: err instanceof Error ? err.message : 'Unknown error' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
