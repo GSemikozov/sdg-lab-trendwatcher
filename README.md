@@ -88,6 +88,39 @@ REDDIT_CLIENT_ID=
 REDDIT_CLIENT_SECRET=
 ```
 
+### Database Setup (Supabase SQL Editor)
+
+```sql
+-- Reports table
+create table if not exists public.reports (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  date_from timestamptz,
+  date_to timestamptz,
+  subreddits text[],
+  total_posts_analyzed int,
+  summary text,
+  signals jsonb,
+  raw_post_count jsonb
+);
+
+alter table public.reports enable row level security;
+create policy "Allow all" on public.reports for all using (true) with check (true);
+
+-- Settings table (synced from UI, read by pg_cron)
+create table if not exists public.app_settings (
+  id text primary key default 'global',
+  subreddits text[] not null default '{lonely,depression,socialskills}',
+  email_recipients text[] not null default '{}',
+  updated_at timestamptz not null default now()
+);
+
+insert into public.app_settings (id) values ('global') on conflict do nothing;
+
+alter table public.app_settings enable row level security;
+create policy "Allow all" on public.app_settings for all using (true) with check (true);
+```
+
 ### pg_cron Setup (Supabase SQL Editor)
 
 ```sql
@@ -107,6 +140,8 @@ select cron.schedule(
 );
 ```
 
+When pg_cron triggers with an empty body, the Edge Function reads subreddits and email recipients from `app_settings` — so changes made in the UI are reflected in automated daily reports.
+
 ## Architecture
 
 ```
@@ -117,10 +152,11 @@ select cron.schedule(
 │   Zustand (persisted settings)           │
 └──────────────┬───────────────────────────┘
                │ supabase.functions.invoke()
+               │ + settings sync (app_settings table)
     ┌──────────┴──────────────┐
     │       Supabase           │
     │  Edge Function (Deno)    │ ← pg_cron daily at 09:00 UTC
-    │  PostgreSQL              │ ← Report storage
+    │  PostgreSQL              │ ← Reports + Settings storage
     │  pg_cron + pg_net        │ ← Schedule trigger
     └──────────┬──────────────┘
         ┌──────┴──────┐───────────┐
@@ -157,10 +193,10 @@ src/
 ├── features/         # User actions (GenerateReport, ConfigureSubreddits, ConfigureEmail, FilterSignals)
 ├── entities/         # Domain objects (Report, Signal, Subreddit)
 ├── shared/           # Infrastructure: UI kit, API clients, types, utils
-│   ├── api/          # Supabase client, report storage, AI & Reddit service interfaces
+│   ├── api/          # Supabase client, report storage, settings storage
 │   ├── ui/           # Reusable components (Button, Card, Badge, Skeleton)
 │   ├── lib/          # Types, Zustand store, report-diff, utilities
-│   └── config/       # App & API configuration
+│   └── config/       # App configuration
 └── test/             # Test setup
 ```
 
@@ -242,11 +278,11 @@ Email reports additionally include links to the top 15 most discussed posts for 
 
 **LLM over embeddings for MVP.** gpt-4o-mini at $0.15/1M input tokens costs ~$0.01 per daily report. Delivers nuanced analysis with actionable hypotheses. Embeddings + clustering deferred until longitudinal data justifies the infrastructure.
 
-**Provider-agnostic AI.** `AIAnalysisService` interface abstracts OpenAI — swap to Anthropic, local LLM, or any provider by implementing one interface.
-
 **Storybook-ready UI.** All shared/ui components are self-contained with typed props — ready for extraction into a design system package.
 
-**Persisted client settings.** Subreddit selection and email recipients stored in Zustand with localStorage persistence — settings survive page reloads and are sent to the Edge Function per request.
+**Settings synced to DB.** Subreddit selection and email recipients are persisted both in localStorage (instant UI) and Supabase `app_settings` table. This ensures pg_cron uses the same settings configured in the UI — no manual env variable changes needed.
+
+**Dev/prod auto-detection.** `VITE_FUNCTIONS_URL` in `.env.local` routes to local Edge Functions during development. Production builds ignore it automatically (`import.meta.env.DEV` guard) — no manual switching needed.
 
 ## Answers to Mandatory Questions
 
