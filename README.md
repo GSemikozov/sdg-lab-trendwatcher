@@ -309,6 +309,8 @@ Email reports additionally include links to the top 15 most discussed posts for 
 
 **LLM over embeddings for MVP.** gpt-4o-mini at $0.15/1M input tokens costs ~$0.01 per daily report. Delivers nuanced analysis with actionable hypotheses. Embeddings + clustering deferred until longitudinal data justifies the infrastructure.
 
+**Brevo for email delivery.** Chosen over Resend (recipient restrictions on free tier) and Gmail SMTP (auth complexity in Deno). Brevo's free tier allows 300 emails/day to any recipient without domain verification — sufficient for an internal tool. REST API works natively in Deno Edge Functions. Recipients are configurable from the UI.
+
 **Storybook-ready UI.** All shared/ui components are self-contained with typed props — ready for extraction into a design system package.
 
 **Settings synced to DB.** Subreddit selection and email recipients are persisted both in localStorage (instant UI) and Supabase `app_settings` table. This ensures pg_cron uses the same settings configured in the UI — no manual env variable changes needed.
