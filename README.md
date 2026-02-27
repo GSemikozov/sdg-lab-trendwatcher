@@ -167,6 +167,9 @@ npm run dev        # → http://localhost:3000
 cp supabase/.env.example supabase/.env
 # Fill in API keys
 npm run dev:functions
+
+# To route frontend → local functions, add to .env:
+# VITE_FUNCTIONS_URL=http://localhost:54321/functions/v1
 ```
 
 ### Build & Deploy

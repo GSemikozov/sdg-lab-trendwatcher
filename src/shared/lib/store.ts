@@ -68,16 +68,25 @@ export const useAppStore = create<AppStore>()(
               body.emailRecipients = emailRecipients;
             }
 
-            const { data, error } = await supabase.functions.invoke('daily-report', {
-              body,
-            });
+            const functionsUrl = import.meta.env.VITE_FUNCTIONS_URL;
+            let data: Record<string, unknown> | null;
 
-            if (error) {
-              throw new Error(error.message || 'Edge Function call failed');
+            if (functionsUrl) {
+              const res = await fetch(`${functionsUrl}/daily-report`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+              });
+              data = await res.json();
+              if (!res.ok) throw new Error((data as { error?: string })?.error || `HTTP ${res.status}`);
+            } else {
+              const result = await supabase.functions.invoke('daily-report', { body });
+              if (result.error) throw new Error(result.error.message || 'Edge Function call failed');
+              data = result.data;
             }
 
             if (!data?.success) {
-              throw new Error(data?.error || 'Report generation failed');
+              throw new Error((data?.error as string) || 'Report generation failed');
             }
 
             const reports = await reportStorage.getAll();
