@@ -308,6 +308,15 @@ Email reports additionally include links to the top 15 most discussed posts for 
 3. **Phase 3:** AI-generated product specs from approved hypotheses — personas, user stories, MVP scope, technical architecture sketch
 4. **Phase 4:** Full loop: detect signal → score → generate spec → create repo from template → assign team. Human approval at gates only.
 
+## Future Improvements
+
+- **Analytics page** — charts built with Recharts directly in the dashboard: post volume over 30 days, signal category distribution, recurring topic heatmap. All data already exists in Supabase `reports` table.
+- **Embeddings + clustering** — pgvector for cross-day semantic similarity, HDBSCAN for long-term topic discovery (see [Scaling Beyond MVP](#scaling-beyond-mvp-embeddings--clustering))
+- **Slack integration** — daily report delivery to a Slack channel alongside email
+- **Reddit OAuth** — full API access with richer post/comment data when approved
+- **Opportunity scoring** — auto-rank hypotheses by `strength × domain_fit × competition_gap × urgency`
+- **Error monitoring** — Sentry for frontend + Edge Function alerting
+
 ## License
 
 Internal tool — SDG Lab proprietary.
