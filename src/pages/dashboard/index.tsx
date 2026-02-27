@@ -1,11 +1,13 @@
 import { GenerateReportButton } from '@features/generate-report';
+import { compareReports } from '@shared/lib/report-diff';
 import { useAppStore } from '@shared/lib/store';
 import { Badge, Skeleton } from '@shared/ui';
 import { ReportCard } from '@widgets/report-card';
+import { ReportDiff } from '@widgets/report-diff';
 import { SignalList } from '@widgets/signal-list';
 import { TrendBoard } from '@widgets/trend-board';
 import { BarChart3, Settings } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 export function DashboardPage() {
@@ -30,6 +32,14 @@ export function DashboardPage() {
   }, [reports, selectedReportId]);
 
   const selectedReport = reports.find((r) => r.id === selectedReportId) ?? null;
+
+  const comparison = useMemo(() => {
+    if (!selectedReport || reports.length < 2) return null;
+    const idx = reports.findIndex((r) => r.id === selectedReportId);
+    const previousReport = reports[idx + 1];
+    if (!previousReport) return null;
+    return compareReports(selectedReport, previousReport);
+  }, [selectedReport, selectedReportId, reports]);
 
   return (
     <div className="min-h-screen">
@@ -98,6 +108,7 @@ export function DashboardPage() {
               {selectedReport ? (
                 <>
                   <TrendBoard report={selectedReport} />
+                  {comparison && <ReportDiff comparison={comparison} />}
                   <div>
                     <h2 className="mb-3 text-lg font-semibold text-foreground">All Signals</h2>
                     <SignalList signals={selectedReport.signals} />
