@@ -210,15 +210,26 @@ Reddit blocks API requests from cloud provider IPs. The Edge Function uses a 3-t
 
 When Reddit OAuth credentials are obtained (requires approved Reddit app), the system automatically upgrades to full API access with richer data.
 
-### AI Analysis
+### AI Analysis: Why LLM, Not Embeddings
 
-**LLM-based analysis** (gpt-4o-mini) was chosen over embeddings/clustering for MVP because:
+The core question: how to extract actionable signals from ~100 Reddit posts daily?
 
-- **Understands nuance** — sarcasm, tone, emotional subtext that embeddings miss
-- **Generates hypotheses** — reasons about _why_ and _what to build_, not just finds patterns
-- **Structured output** — returns typed JSON with categories, strength, sentiment, growth estimates
-- **Handles daily volume** — 2-3 subreddits produce ~70-100 posts, well within context window
-- **Faster to ship** — no vector DB, no embedding pipeline, no cluster tuning
+**Option A: Embeddings + Clustering** — convert each post to a vector, cluster similar posts, measure cluster growth over time. Gives quantitative precision ("topic X grew 340% in 7 days") but requires: vector DB (pgvector/Pinecone), embedding pipeline, cluster tuning (min_cluster_size, epsilon), dimensionality reduction for visualization, and a separate step to interpret clusters into human-readable signals.
+
+**Option B: LLM analysis (chosen)** — feed posts directly to gpt-4o-mini with a structured prompt. The model reads, interprets, and outputs categorized signals in one pass.
+
+Why LLM wins for MVP:
+
+| Criteria | LLM | Embeddings + Clustering |
+|---|---|---|
+| Understands sarcasm, tone, subtext | Yes | No — treats "I love being alone /s" as positive |
+| Generates product hypotheses | Yes — reasons about *what to build* | No — only groups similar posts |
+| Time to ship | Hours (prompt engineering) | Weeks (infra + tuning) |
+| Infrastructure | One API call | Vector DB + embedding pipeline + cluster jobs |
+| Cost per report | ~$0.01 (gpt-4o-mini) | ~$0.005 embeddings + DB hosting |
+| Cross-day comparison | Via Report Diff (UI) | Native (vector similarity) |
+
+**The 80/20 rule:** LLM gives 80% of the value (actionable signals with context) for 20% of the effort. Embeddings add the remaining 20% of value (quantitative precision, anomaly detection) but require 80% more infrastructure.
 
 The prompt instructs the model to:
 
@@ -239,34 +250,54 @@ When 2+ reports exist, the dashboard automatically compares the selected report 
 
 ### Scaling Beyond MVP: Embeddings & Clustering
 
-For longer-term quantitative analysis the system can be extended with:
+When the system accumulates 30+ days of reports and the team needs quantitative rigor, add:
 
-**Embeddings** (vector representations of post meaning):
+**Embeddings** (vector representations of post meaning via `text-embedding-3-small`):
 
-- Cross-day topic tracking: compare today's posts against yesterday's semantically, not by keywords
-- Duplicate detection: group "lonely in new city" / "moved, no friends" / "isolated after relocation" as one theme
-- Anomaly detection: mathematically measure when a topic cluster grows 10x in 24h
+- **Cross-day semantic tracking** — "was this topic discussed last week?" becomes a cosine similarity query, not a keyword match. Catches paraphrases: "lonely in new city" / "moved, no friends" / "isolated after relocation" = same signal.
+- **Anomaly detection** — measure when a topic cluster grows 10x in 24h. LLM estimates growth qualitatively; embeddings measure it mathematically.
+- **Deduplication** — posts across subreddits about the same topic get grouped automatically.
+- **Infrastructure:** pgvector extension in Supabase (already available), ~$0.002/1K posts for embedding generation.
 
 **Clustering** (HDBSCAN / k-means on embeddings):
 
-- Long-term trend visualization: 30-day topic evolution charts
-- New topic discovery: posts that don't fit existing clusters = emerging signals
-- Topic landscape maps: 2D scatter plots (via UMAP) showing what communities discuss
+- **Long-term trend visualization** — 30-day topic evolution charts. See which pain points persist vs. which are one-off spikes.
+- **New topic discovery** — posts that don't fit any existing cluster = genuinely emerging signals. More reliable than LLM judgment for "is this really new?"
+- **Topic landscape maps** — 2D scatter plots (via UMAP dimensionality reduction) showing what communities discuss and how topics relate to each other.
+- **Infrastructure:** Python job (scheduled or on-demand), HDBSCAN for density-based clustering, UMAP for visualization.
 
-**Why not for MVP:** LLM gives 80% of value with 20% of effort. Embeddings + clustering add quantitative precision and historical comparison but require vector DB infrastructure (pgvector), embedding pipeline, and cluster tuning — justified after product-market fit.
+**When to add:** After 30+ daily reports exist in the DB and the team wants to answer "how did this pain point evolve over the last month?" — a question LLM analysis alone can't answer reliably.
 
 ## Report Format
 
-Each report contains an executive summary and structured signals across 4 categories:
+Each report is designed to be **short and actionable** — a founder should be able to read it in 2 minutes and know what to build next.
 
-| Category                  | What it captures                                                                    |
-| ------------------------- | ----------------------------------------------------------------------------------- |
-| 🆕 **Emerging Topics**    | New themes appearing for the first time or gaining initial traction                 |
-| 📈 **Growing Trends**     | Topics accelerating vs. baseline (with estimated % growth)                          |
-| 😰 **Pain Points**        | Specific user frustrations with unmet needs a product could address                 |
-| 💡 **Product Hypotheses** | Actionable ideas linked to observed pain points: "Because [pain], build [solution]" |
+### Structure
 
-Each signal includes: title, description grounded in post evidence, strength (high/medium/low), sentiment, post count, source subreddits, and growth percentage.
+1. **Executive Summary** (2-3 sentences) — leads with the most important finding, not generic phrasing
+2. **Signals** grouped by category (see below) — each grounded in specific post evidence
+3. **Report Comparison** (dashboard only) — diff vs. previous report: new/gone/intensified/weakened signals
+4. **Top Discussed Posts** (email only) — 15 most engaged posts with direct Reddit links for verification
+
+### Signal Categories
+
+| Category | What it captures | Example |
+|---|---|---|
+| 🆕 **Emerging Topics** | Themes appearing for the first time or gaining initial traction | "AI companions as 3am emotional support" |
+| 📈 **Growing Trends** | Topics accelerating vs. baseline (with estimated % growth) | "Discord support groups replacing therapy apps (+45%)" |
+| 😰 **Pain Points** | Specific user frustrations with unmet needs a product could address | "Users report therapy apps feel robotic and scripted" |
+| 💡 **Product Hypotheses** | Actionable ideas linked to pain points above | "Because users want human-like support at odd hours, a product that matches peers by timezone could reduce late-night loneliness" |
+
+### Signal Fields
+
+Each signal includes:
+- **Title** — short (5-8 words), descriptive
+- **Description** — what's happening AND why it matters, referencing observed post patterns
+- **Strength** — high (10+ posts with strong engagement), medium (3-9), low (1-2 emerging)
+- **Sentiment** — positive / negative / mixed / neutral
+- **Post count** — how many posts support this signal
+- **Subreddits** — which communities generated this signal
+- **Growth %** — estimated vs. normal volume (when applicable)
 
 Email reports additionally include links to the top 15 most discussed posts for quick verification.
 
