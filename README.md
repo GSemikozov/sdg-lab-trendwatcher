@@ -341,6 +341,7 @@ Email reports additionally include links to the top 15 most discussed posts for 
 
 ## Future Improvements
 
+- **Authentication & roles** — currently the dashboard is public. Add Supabase Auth (email/magic link) with role-based access: `admin` (full access, settings, report generation), `viewer` (read-only dashboard). RLS policies on `reports` and `app_settings` tables should restrict access to authenticated users only. Edge Function should validate JWT for manual triggers.
 - **Analytics page** — charts built with Recharts directly in the dashboard: post volume over 30 days, signal category distribution, recurring topic heatmap. All data already exists in Supabase `reports` table.
 - **Embeddings + clustering** — pgvector for cross-day semantic similarity, HDBSCAN for long-term topic discovery (see [Scaling Beyond MVP](#scaling-beyond-mvp-embeddings--clustering))
 - **Slack integration** — daily report delivery to a Slack channel alongside email
