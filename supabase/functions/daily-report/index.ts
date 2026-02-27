@@ -301,7 +301,8 @@ function buildEmailHtml(
   summary: string,
   signals: Signal[],
   totalPosts: number,
-  subreddits: string[]
+  subreddits: string[],
+  topPosts: RedditPost[]
 ): string {
   const date = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -373,6 +374,15 @@ function buildEmailHtml(
     <p style="color:#52525b;font-size:12px;margin:12px 0 0;">${totalPosts} posts from ${subreddits.map((s) => `r/${s}`).join(', ')}</p>
   </div>
   ${sections}
+  ${topPosts.length > 0 ? `
+  <div style="margin-bottom:24px;">
+    <h2 style="color:#fafafa;font-size:16px;margin:0 0 12px;">🔗 Top Discussed Posts</h2>
+    ${topPosts.map((p) => `
+    <div style="border-left:3px solid #8b5cf6;padding:8px 12px;margin-bottom:8px;">
+      <a href="https://www.reddit.com${p.permalink}" style="color:#c4b5fd;font-size:13px;text-decoration:none;font-weight:500;">${p.title}</a>
+      <div style="font-size:11px;color:#71717a;margin-top:4px;">r/${p.subreddit}${p.score > 0 ? ` · ${p.score} pts` : ''}${p.num_comments > 0 ? ` · ${p.num_comments} comments` : ''}</div>
+    </div>`).join('')}
+  </div>` : ''}
   <div style="text-align:center;padding-top:24px;border-top:1px solid #27272a;">
     <p style="color:#52525b;font-size:12px;margin:0;">TrendWatcher by SDG Lab</p>
   </div>
@@ -518,7 +528,10 @@ Deno.serve(async (req) => {
     let emailSent = false;
     if (brevoKey && recipients.length > 0) {
       try {
-        const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits);
+        const topPosts = [...posts]
+          .sort((a, b) => (b.score + b.num_comments) - (a.score + a.num_comments))
+          .slice(0, 15);
+        const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits, topPosts);
         await sendEmail(html, recipients, brevoKey, senderEmail);
         emailSent = true;
         console.log(`[daily-report] Email sent to: ${recipients.join(', ')}`);
