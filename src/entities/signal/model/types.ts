@@ -1,1 +1,1 @@
-export type { Signal, SignalCategory, SignalStrength, SentimentType } from '@shared/lib/types';
+export type { SentimentType, Signal, SignalCategory, SignalStrength } from '@shared/lib/types';

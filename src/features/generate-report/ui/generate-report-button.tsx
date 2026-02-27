@@ -1,5 +1,5 @@
-import { Button } from '@shared/ui';
 import { useAppStore } from '@shared/lib/store';
+import { Button } from '@shared/ui';
 import { FileText } from 'lucide-react';
 
 export function GenerateReportButton() {

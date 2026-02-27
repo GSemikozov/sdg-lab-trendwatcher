@@ -1,12 +1,8 @@
-import type { Report } from '@shared/lib/types';
 import { cn } from '@shared/lib/cn';
+import type { Report } from '@shared/lib/types';
 import { Badge, Card, CardContent } from '@shared/ui';
 import { format } from 'date-fns';
-import {
-  Calendar,
-  FileText,
-  Trash2,
-} from 'lucide-react';
+import { Calendar, FileText, Trash2 } from 'lucide-react';
 
 interface ReportCardProps {
   report: Report;

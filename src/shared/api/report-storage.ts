@@ -65,11 +65,7 @@ export class SupabaseReportStorage implements ReportStorage {
   }
 
   async getById(id: string): Promise<Report | null> {
-    const { data, error } = await supabase
-      .from('reports')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const { data, error } = await supabase.from('reports').select('*').eq('id', id).single();
 
     if (error) return null;
     return rowToReport(data as ReportRow);

@@ -1,13 +1,7 @@
 import { SignalCard } from '@entities/signal';
 import type { Report, SignalCategory } from '@shared/lib/types';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@shared/ui';
-import {
-  AlertTriangle,
-  BarChart3,
-  Lightbulb,
-  Sparkles,
-  TrendingUp,
-} from 'lucide-react';
+import { AlertTriangle, BarChart3, Lightbulb, Sparkles, TrendingUp } from 'lucide-react';
 
 interface TrendBoardProps {
   report: Report;

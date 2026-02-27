@@ -24,7 +24,10 @@ const STRENGTH_ORDER: Record<SignalStrength, number> = {
 };
 
 function normalizeTitle(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function findMatchingSignal(signal: Signal, candidates: Signal[]): Signal | undefined {
@@ -52,9 +55,7 @@ export function compareReports(current: Report, previous: Report): ReportCompari
     }
   }
 
-  const goneSignals = previous.signals.filter(
-    (prev) => !findMatchingSignal(prev, current.signals)
-  );
+  const goneSignals = previous.signals.filter((prev) => !findMatchingSignal(prev, current.signals));
 
   const postCountDelta = current.totalPostsAnalyzed - previous.totalPostsAnalyzed;
   const postCountPercent =

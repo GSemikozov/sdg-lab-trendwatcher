@@ -143,9 +143,9 @@ function EmptyState() {
       </div>
       <h2 className="mt-6 text-xl font-semibold text-foreground">No reports yet</h2>
       <p className="mt-2 max-w-md text-center text-sm text-muted-foreground">
-        Generate your first report to analyze Reddit discussions across loneliness, depression,
-        and social skills communities. The system will identify emerging topics, growing trends,
-        pain points, and product hypotheses.
+        Generate your first report to analyze Reddit discussions across loneliness, depression, and
+        social skills communities. The system will identify emerging topics, growing trends, pain
+        points, and product hypotheses.
       </p>
       <div className="mt-6">
         <GenerateReportButton />

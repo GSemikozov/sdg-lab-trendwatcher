@@ -11,9 +11,7 @@ export function SignalList({ signals }: SignalListProps) {
   const [activeCategory, setActiveCategory] = useState<SignalCategory | 'all'>('all');
 
   const filtered =
-    activeCategory === 'all'
-      ? signals
-      : signals.filter((s) => s.category === activeCategory);
+    activeCategory === 'all' ? signals : signals.filter((s) => s.category === activeCategory);
 
   return (
     <div className="space-y-4">

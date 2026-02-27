@@ -1,17 +1,8 @@
 import { cn } from '@shared/lib/cn';
 import type { Signal } from '@shared/lib/types';
-import {
-  AlertTriangle,
-  ArrowUpRight,
-  Lightbulb,
-  Sparkles,
-  TrendingUp,
-} from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, Lightbulb, Sparkles, TrendingUp } from 'lucide-react';
 
-const categoryConfig: Record<
-  string,
-  { icon: typeof Sparkles; label: string; color: string }
-> = {
+const categoryConfig: Record<string, { icon: typeof Sparkles; label: string; color: string }> = {
   emerging_topic: { icon: Sparkles, label: 'New Topic', color: 'text-trend-new' },
   growing_trend: { icon: TrendingUp, label: 'Growing', color: 'text-trend-up' },
   pain_point: { icon: AlertTriangle, label: 'Pain Point', color: 'text-signal-high' },
@@ -74,9 +65,7 @@ export function SignalCard({ signal, className }: SignalCardProps) {
 
       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         {signal.postCount > 0 && <span>{signal.postCount} posts</span>}
-        <span className={sentimentColors[signal.sentiment]}>
-          {signal.sentiment} sentiment
-        </span>
+        <span className={sentimentColors[signal.sentiment]}>{signal.sentiment} sentiment</span>
         <div className="flex gap-1">
           {signal.subreddits.map((sub) => (
             <span

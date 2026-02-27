@@ -1,9 +1,9 @@
-import { create } from 'zustand';
-import { devtools, persist } from 'zustand/middleware';
-import { APP_CONFIG } from '@shared/config';
 import { reportStorage } from '@shared/api';
 import { supabase } from '@shared/api/supabase';
+import { APP_CONFIG } from '@shared/config';
 import type { Report, SubredditConfig } from '@shared/lib/types';
+import { create } from 'zustand';
+import { devtools, persist } from 'zustand/middleware';
 
 interface AppStore {
   reports: Report[];
@@ -19,6 +19,25 @@ interface AppStore {
   setSubreddits: (subreddits: SubredditConfig[]) => void;
   setEmailRecipients: (emails: string[]) => void;
   clearError: () => void;
+}
+
+async function invokeEdgeFunction(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const functionsUrl = import.meta.env.DEV ? import.meta.env.VITE_FUNCTIONS_URL : undefined;
+
+  if (functionsUrl) {
+    const res = await fetch(`${functionsUrl}/daily-report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as { error?: string })?.error || `HTTP ${res.status}`);
+    return data;
+  }
+
+  const { data, error } = await supabase.functions.invoke('daily-report', { body });
+  if (error) throw new Error(error.message || 'Edge Function call failed');
+  return data;
 }
 
 export const useAppStore = create<AppStore>()(
@@ -68,25 +87,7 @@ export const useAppStore = create<AppStore>()(
               body.emailRecipients = emailRecipients;
             }
 
-            const functionsUrl = import.meta.env.DEV
-              ? import.meta.env.VITE_FUNCTIONS_URL
-              : undefined;
-            let data: Record<string, unknown> | null;
-
-            if (functionsUrl) {
-              const res = await fetch(`${functionsUrl}/daily-report`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-              });
-              data = await res.json();
-              if (!res.ok) throw new Error((data as { error?: string })?.error || `HTTP ${res.status}`);
-            } else {
-              const result = await supabase.functions.invoke('daily-report', { body });
-              if (result.error) throw new Error(result.error.message || 'Edge Function call failed');
-              data = result.data;
-            }
-
+            const data = await invokeEdgeFunction(body);
             if (!data?.success) {
               throw new Error((data?.error as string) || 'Report generation failed');
             }

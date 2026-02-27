@@ -1,12 +1,6 @@
-import type { SignalCategory } from '@shared/lib/types';
 import { cn } from '@shared/lib/cn';
-import {
-  AlertTriangle,
-  Filter,
-  Lightbulb,
-  Sparkles,
-  TrendingUp,
-} from 'lucide-react';
+import type { SignalCategory } from '@shared/lib/types';
+import { AlertTriangle, Filter, Lightbulb, Sparkles, TrendingUp } from 'lucide-react';
 
 interface SignalFilterProps {
   activeCategory: SignalCategory | 'all';

@@ -166,7 +166,9 @@ export function ReportDiff({ comparison }: ReportDiffProps) {
                   className="flex items-center justify-between rounded-md border border-border bg-card/50 px-3 py-2 opacity-60"
                 >
                   <span className="text-sm text-muted-foreground line-through">{s.title}</span>
-                  <span className="text-xs text-muted-foreground">{s.category.replace('_', ' ')}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {s.category.replace('_', ' ')}
+                  </span>
                 </div>
               ))}
             </div>
