@@ -27,11 +27,16 @@ const mockReport = {
 const mockGetAll = vi.fn().mockResolvedValue([]);
 const mockDeleteFn = vi.fn().mockResolvedValue(undefined);
 
+const mockSaveSettings = vi.fn().mockResolvedValue(undefined);
+const mockLoadSettings = vi.fn().mockResolvedValue(null);
+
 vi.mock('@shared/api', () => ({
   reportStorage: {
     getAll: (...args: unknown[]) => mockGetAll(...args),
     delete: (...args: unknown[]) => mockDeleteFn(...args),
   },
+  saveSettings: (...args: unknown[]) => mockSaveSettings(...args),
+  loadSettings: (...args: unknown[]) => mockLoadSettings(...args),
 }));
 
 const mockInvoke = vi.fn();

@@ -467,17 +467,45 @@ Deno.serve(async (req) => {
       .split(',')
       .filter(Boolean);
 
+    let bodyOverrides = false;
     if (req.method === 'POST') {
       try {
         const body = await req.json();
         if (body.subreddits?.length > 0) {
           subreddits = body.subreddits;
+          bodyOverrides = true;
         }
         if (Array.isArray(body.emailRecipients) && body.emailRecipients.length > 0) {
           recipients = body.emailRecipients;
+          bodyOverrides = true;
         }
       } catch {
         // no body or invalid JSON — use defaults
+      }
+    }
+
+    if (!bodyOverrides && supabaseUrl && supabaseKey) {
+      try {
+        const settingsRes = await fetch(
+          `${supabaseUrl}/rest/v1/app_settings?id=eq.global&select=subreddits,email_recipients`,
+          {
+            headers: {
+              apikey: supabaseKey,
+              Authorization: `Bearer ${supabaseKey}`,
+            },
+          }
+        );
+        if (settingsRes.ok) {
+          const rows = await settingsRes.json();
+          if (rows.length > 0) {
+            const s = rows[0];
+            if (s.subreddits?.length > 0) subreddits = s.subreddits;
+            if (s.email_recipients?.length > 0) recipients = s.email_recipients;
+            console.log('[daily-report] Using settings from DB');
+          }
+        }
+      } catch (err) {
+        console.error('[daily-report] Failed to load DB settings, using env defaults:', err);
       }
     }
 

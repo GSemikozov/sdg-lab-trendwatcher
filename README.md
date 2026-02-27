@@ -17,136 +17,6 @@ Every day at 09:00 UTC, a Supabase pg_cron job triggers an Edge Function that:
 
 Reports can also be generated on demand via the dashboard's "Generate Report" button.
 
-## Architecture
-
-```
-┌──────────────────────────────────────────┐
-│            Frontend (SPA)                 │
-│   React 19 + TS + Vite + Tailwind v4    │
-│   Feature Sliced Design (FSD)            │
-│   Zustand (persisted settings)           │
-└──────────────┬───────────────────────────┘
-               │ supabase.functions.invoke()
-    ┌──────────┴──────────────┐
-    │       Supabase           │
-    │  Edge Function (Deno)    │ ← pg_cron daily at 09:00 UTC
-    │  PostgreSQL              │ ← Report storage
-    │  pg_cron + pg_net        │ ← Schedule trigger
-    └──────────┬──────────────┘
-        ┌──────┴──────┐───────────┐
-        │ Reddit RSS  │ OpenAI    │ Brevo (email)
-        └─────────────┘───────────┘
-```
-
-### Data Pipeline (Edge Function)
-
-```
-Reddit RSS/API  →  Parse posts  →  OpenAI gpt-4o-mini  →  Structured JSON
-                                        │
-                                        ▼
-                              ┌─────────────────┐
-                              │  4 signal types: │
-                              │  🆕 Emerging     │
-                              │  📈 Growing      │
-                              │  😰 Pain points  │
-                              │  💡 Hypotheses   │
-                              └────────┬────────┘
-                                       │
-                          ┌────────────┼────────────┐
-                          ▼            ▼            ▼
-                     Supabase DB   Email (Brevo)  Dashboard
-```
-
-### FSD Structure
-
-```
-src/
-├── app/              # App shell: providers, routing, global styles
-├── pages/            # Route-level components (Dashboard, Settings)
-├── widgets/          # Composite UI blocks (TrendBoard, SignalList, ReportCard, ReportDiff)
-├── features/         # User actions (GenerateReport, ConfigureSubreddits, ConfigureEmail, FilterSignals)
-├── entities/         # Domain objects (Report, Signal, Subreddit)
-├── shared/           # Infrastructure: UI kit, API clients, types, utils
-│   ├── api/          # Supabase client, report storage, AI & Reddit service interfaces
-│   ├── ui/           # Reusable components (Button, Card, Badge, Skeleton)
-│   ├── lib/          # Types, Zustand store, report-diff, utilities
-│   └── config/       # App & API configuration
-└── test/             # Test setup
-```
-
-### Reddit Data Access
-
-Reddit blocks API requests from cloud provider IPs. The Edge Function uses a 3-tier fallback:
-
-1. **Reddit OAuth** (when credentials available) — official API with full access to posts/comments
-2. **Direct JSON API** — works locally, blocked from most cloud IPs
-3. **RSS feed** — `reddit.com/r/{sub}/hot.rss` — reliable from cloud IPs, limited metadata but sufficient for MVP analysis
-
-When Reddit OAuth credentials are obtained (requires approved Reddit app), the system automatically upgrades to full API access with richer data.
-
-### AI Analysis
-
-**LLM-based analysis** (gpt-4o-mini) was chosen over embeddings/clustering for MVP because:
-
-- **Understands nuance** — sarcasm, tone, emotional subtext that embeddings miss
-- **Generates hypotheses** — reasons about *why* and *what to build*, not just finds patterns
-- **Structured output** — returns typed JSON with categories, strength, sentiment, growth estimates
-- **Handles daily volume** — 2-3 subreddits produce ~70-100 posts, well within context window
-- **Faster to ship** — no vector DB, no embedding pipeline, no cluster tuning
-
-The prompt instructs the model to:
-- Ground every signal in specific post patterns (not vague summaries)
-- Link hypotheses to observed pain points ("Because users report X, a product that Y could Z")
-- Calibrate strength by post count: high (10+), medium (3-9), low (1-2)
-- Estimate growth percentage based on post density and engagement
-
-### Report Comparison
-
-When 2+ reports exist, the dashboard automatically compares the selected report with the previous one and shows:
-- New signals that weren't present before
-- Signals that intensified (strength increased)
-- Signals that weakened
-- Signals that are no longer detected
-- Post volume delta (absolute + percentage)
-
-### Scaling Beyond MVP: Embeddings & Clustering
-
-For longer-term quantitative analysis the system can be extended with:
-
-**Embeddings** (vector representations of post meaning):
-- Cross-day topic tracking: compare today's posts against yesterday's semantically, not by keywords
-- Duplicate detection: group "lonely in new city" / "moved, no friends" / "isolated after relocation" as one theme
-- Anomaly detection: mathematically measure when a topic cluster grows 10x in 24h
-
-**Clustering** (HDBSCAN / k-means on embeddings):
-- Long-term trend visualization: 30-day topic evolution charts
-- New topic discovery: posts that don't fit existing clusters = emerging signals
-- Topic landscape maps: 2D scatter plots (via UMAP) showing what communities discuss
-
-**Why not for MVP:** LLM gives 80% of value with 20% of effort. Embeddings + clustering add quantitative precision and historical comparison but require vector DB infrastructure (pgvector), embedding pipeline, and cluster tuning — justified after product-market fit.
-
-## Tech Stack
-
-| Concern | Choice |
-|---|---|
-| Framework | React 19 + TypeScript |
-| Build | Vite 7 |
-| Architecture | Feature Sliced Design with path aliases |
-| Styling | Tailwind CSS v4 |
-| UI Kit | Custom components (Button, Card, Badge, Skeleton) — Storybook-ready |
-| State | Zustand (persisted settings: subreddits, email recipients) |
-| Data fetching | React Query |
-| Forms | React Hook Form + Zod |
-| AI | OpenAI gpt-4o-mini (server-side via Edge Function) |
-| Backend | Supabase Edge Functions (Deno) |
-| Database | Supabase PostgreSQL |
-| Scheduling | pg_cron + pg_net (daily trigger at 09:00 UTC) |
-| Email | Brevo (300 emails/day free tier) |
-| Hosting | Netlify (static frontend only) |
-| Linting | Biome |
-| Testing | Vitest + Testing Library + jsdom |
-| Icons | Lucide React |
-
 ## Quick Start
 
 ```bash
@@ -237,15 +107,127 @@ select cron.schedule(
 );
 ```
 
+## Architecture
+
+```
+┌──────────────────────────────────────────┐
+│            Frontend (SPA)                 │
+│   React 19 + TS + Vite + Tailwind v4    │
+│   Feature Sliced Design (FSD)            │
+│   Zustand (persisted settings)           │
+└──────────────┬───────────────────────────┘
+               │ supabase.functions.invoke()
+    ┌──────────┴──────────────┐
+    │       Supabase           │
+    │  Edge Function (Deno)    │ ← pg_cron daily at 09:00 UTC
+    │  PostgreSQL              │ ← Report storage
+    │  pg_cron + pg_net        │ ← Schedule trigger
+    └──────────┬──────────────┘
+        ┌──────┴──────┐───────────┐
+        │ Reddit RSS  │ OpenAI    │ Brevo (email)
+        └─────────────┘───────────┘
+```
+
+### Data Pipeline (Edge Function)
+
+```
+Reddit RSS/API  →  Parse posts  →  OpenAI gpt-4o-mini  →  Structured JSON
+                                        │
+                                        ▼
+                              ┌─────────────────┐
+                              │  4 signal types: │
+                              │  🆕 Emerging     │
+                              │  📈 Growing      │
+                              │  😰 Pain points  │
+                              │  💡 Hypotheses   │
+                              └────────┬────────┘
+                                       │
+                          ┌────────────┼────────────┐
+                          ▼            ▼            ▼
+                     Supabase DB   Email (Brevo)  Dashboard
+```
+
+### FSD Structure
+
+```
+src/
+├── app/              # App shell: providers, routing, global styles
+├── pages/            # Route-level components (Dashboard, Settings)
+├── widgets/          # Composite UI blocks (TrendBoard, SignalList, ReportCard, ReportDiff)
+├── features/         # User actions (GenerateReport, ConfigureSubreddits, ConfigureEmail, FilterSignals)
+├── entities/         # Domain objects (Report, Signal, Subreddit)
+├── shared/           # Infrastructure: UI kit, API clients, types, utils
+│   ├── api/          # Supabase client, report storage, AI & Reddit service interfaces
+│   ├── ui/           # Reusable components (Button, Card, Badge, Skeleton)
+│   ├── lib/          # Types, Zustand store, report-diff, utilities
+│   └── config/       # App & API configuration
+└── test/             # Test setup
+```
+
+### Reddit Data Access
+
+Reddit blocks API requests from cloud provider IPs. The Edge Function uses a 3-tier fallback:
+
+1. **Reddit OAuth** (when credentials available) — official API with full access to posts/comments
+2. **Direct JSON API** — works locally, blocked from most cloud IPs
+3. **RSS feed** — `reddit.com/r/{sub}/hot.rss` — reliable from cloud IPs, limited metadata but sufficient for MVP analysis
+
+When Reddit OAuth credentials are obtained (requires approved Reddit app), the system automatically upgrades to full API access with richer data.
+
+### AI Analysis
+
+**LLM-based analysis** (gpt-4o-mini) was chosen over embeddings/clustering for MVP because:
+
+- **Understands nuance** — sarcasm, tone, emotional subtext that embeddings miss
+- **Generates hypotheses** — reasons about _why_ and _what to build_, not just finds patterns
+- **Structured output** — returns typed JSON with categories, strength, sentiment, growth estimates
+- **Handles daily volume** — 2-3 subreddits produce ~70-100 posts, well within context window
+- **Faster to ship** — no vector DB, no embedding pipeline, no cluster tuning
+
+The prompt instructs the model to:
+
+- Ground every signal in specific post patterns (not vague summaries)
+- Link hypotheses to observed pain points ("Because users report X, a product that Y could Z")
+- Calibrate strength by post count: high (10+), medium (3-9), low (1-2)
+- Estimate growth percentage based on post density and engagement
+
+### Report Comparison
+
+When 2+ reports exist, the dashboard automatically compares the selected report with the previous one and shows:
+
+- New signals that weren't present before
+- Signals that intensified (strength increased)
+- Signals that weakened
+- Signals that are no longer detected
+- Post volume delta (absolute + percentage)
+
+### Scaling Beyond MVP: Embeddings & Clustering
+
+For longer-term quantitative analysis the system can be extended with:
+
+**Embeddings** (vector representations of post meaning):
+
+- Cross-day topic tracking: compare today's posts against yesterday's semantically, not by keywords
+- Duplicate detection: group "lonely in new city" / "moved, no friends" / "isolated after relocation" as one theme
+- Anomaly detection: mathematically measure when a topic cluster grows 10x in 24h
+
+**Clustering** (HDBSCAN / k-means on embeddings):
+
+- Long-term trend visualization: 30-day topic evolution charts
+- New topic discovery: posts that don't fit existing clusters = emerging signals
+- Topic landscape maps: 2D scatter plots (via UMAP) showing what communities discuss
+
+**Why not for MVP:** LLM gives 80% of value with 20% of effort. Embeddings + clustering add quantitative precision and historical comparison but require vector DB infrastructure (pgvector), embedding pipeline, and cluster tuning — justified after product-market fit.
+
 ## Report Format
 
 Each report contains an executive summary and structured signals across 4 categories:
 
-| Category | What it captures |
-|---|---|
-| 🆕 **Emerging Topics** | New themes appearing for the first time or gaining initial traction |
-| 📈 **Growing Trends** | Topics accelerating vs. baseline (with estimated % growth) |
-| 😰 **Pain Points** | Specific user frustrations with unmet needs a product could address |
+| Category                  | What it captures                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| 🆕 **Emerging Topics**    | New themes appearing for the first time or gaining initial traction                 |
+| 📈 **Growing Trends**     | Topics accelerating vs. baseline (with estimated % growth)                          |
+| 😰 **Pain Points**        | Specific user frustrations with unmet needs a product could address                 |
 | 💡 **Product Hypotheses** | Actionable ideas linked to observed pain points: "Because [pain], build [solution]" |
 
 Each signal includes: title, description grounded in post evidence, strength (high/medium/low), sentiment, post count, source subreddits, and growth percentage.

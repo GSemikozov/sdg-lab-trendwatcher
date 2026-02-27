@@ -1,4 +1,4 @@
-import { reportStorage } from '@shared/api';
+import { loadSettings, reportStorage, saveSettings } from '@shared/api';
 import { supabase } from '@shared/api/supabase';
 import { APP_CONFIG } from '@shared/config';
 import type { Report, SubredditConfig } from '@shared/lib/types';
@@ -12,8 +12,10 @@ interface AppStore {
   error: string | null;
   subreddits: SubredditConfig[];
   emailRecipients: string[];
+  settingsLoaded: boolean;
 
   loadReports: () => Promise<void>;
+  loadSettings: () => Promise<void>;
   generateReport: () => Promise<{ success: boolean; error?: string }>;
   deleteReport: (id: string) => Promise<void>;
   setSubreddits: (subreddits: SubredditConfig[]) => void;
@@ -54,6 +56,26 @@ export const useAppStore = create<AppStore>()(
           category: 'core',
         })),
         emailRecipients: [],
+        settingsLoaded: false,
+
+        loadSettings: async () => {
+          try {
+            const settings = await loadSettings();
+            if (settings) {
+              const subreddits = settings.subreddits.map((name) => ({
+                name,
+                enabled: true,
+                category: 'core',
+              }));
+              set({ subreddits, emailRecipients: settings.email_recipients, settingsLoaded: true });
+            } else {
+              set({ settingsLoaded: true });
+            }
+          } catch (err) {
+            console.error('loadSettings error:', err);
+            set({ settingsLoaded: true });
+          }
+        },
 
         loadReports: async () => {
           const hasCache = get().reports.length > 0;
@@ -117,8 +139,19 @@ export const useAppStore = create<AppStore>()(
           }
         },
 
-        setSubreddits: (subreddits) => set({ subreddits }),
-        setEmailRecipients: (emailRecipients) => set({ emailRecipients }),
+        setSubreddits: (subreddits) => {
+          set({ subreddits });
+          const names = subreddits.filter((s) => s.enabled).map((s) => s.name);
+          saveSettings({ subreddits: names }).catch((err) =>
+            console.error('Failed to sync subreddits:', err)
+          );
+        },
+        setEmailRecipients: (emailRecipients) => {
+          set({ emailRecipients });
+          saveSettings({ email_recipients: emailRecipients }).catch((err) =>
+            console.error('Failed to sync email recipients:', err)
+          );
+        },
         clearError: () => set({ error: null }),
       }),
       {
