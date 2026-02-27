@@ -37,7 +37,11 @@ export const useAppStore = create<AppStore>()(
         emailRecipients: [],
 
         loadReports: async () => {
-          set({ isLoading: true, error: null });
+          const hasCache = get().reports.length > 0;
+          if (!hasCache) {
+            set({ isLoading: true });
+          }
+          set({ error: null });
           try {
             const reports = await reportStorage.getAll();
             set({ reports });
