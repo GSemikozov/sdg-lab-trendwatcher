@@ -68,7 +68,9 @@ export const useAppStore = create<AppStore>()(
               body.emailRecipients = emailRecipients;
             }
 
-            const functionsUrl = import.meta.env.VITE_FUNCTIONS_URL;
+            const functionsUrl = import.meta.env.DEV
+              ? import.meta.env.VITE_FUNCTIONS_URL
+              : undefined;
             let data: Record<string, unknown> | null;
 
             if (functionsUrl) {
