@@ -167,7 +167,7 @@ When pg_cron triggers with an empty body, the Edge Function reads subreddits and
 ### Data Pipeline (Edge Function)
 
 ```
-Reddit RSS/API  →  Parse posts  →  OpenAI gpt-4o-mini  →  Structured JSON
+Reddit RSS/API  →  Parse posts (titles + body, no comments)  →  OpenAI gpt-4o-mini  →  Structured JSON
                                         │
                                         ▼
                               ┌─────────────────┐
@@ -347,7 +347,7 @@ Email reports additionally include links to the top 15 most discussed posts for 
 - **Analytics page** — charts built with Recharts directly in the dashboard: post volume over 30 days, signal category distribution, recurring topic heatmap. All data already exists in Supabase `reports` table.
 - **Embeddings + clustering** — pgvector for cross-day semantic similarity, HDBSCAN for long-term topic discovery (see [Scaling Beyond MVP](#scaling-beyond-mvp-embeddings--clustering))
 - **Slack integration** — daily report delivery to a Slack channel alongside email
-- **Reddit OAuth** — full API access with richer post/comment data when approved
+- **Reddit OAuth + comment analysis** — full API access when approved; enables fetching top comments per post for deeper sentiment analysis (currently only post titles and body text are analyzed, comments are not fetched due to RSS limitations)
 - **Opportunity scoring** — auto-rank hypotheses by `strength × domain_fit × competition_gap × urgency`
 - **Error monitoring** — Sentry for frontend + Edge Function alerting
 
