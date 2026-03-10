@@ -25,7 +25,10 @@ export function SubredditPicker() {
       setSubreddits(subreddits.map((s) => (s.name === name ? { ...s, enabled: !s.enabled } : s)));
     } else {
       const suggested = SUGGESTED_SUBREDDITS.find((s) => s.name === name);
-      setSubreddits([...subreddits, suggested ?? { name, enabled: true, category: 'custom' }]);
+      setSubreddits([
+        ...subreddits,
+        { ...(suggested ?? { name, category: 'custom' }), enabled: true },
+      ]);
     }
   };
 
