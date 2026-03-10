@@ -1,4 +1,9 @@
-import { updateSpace as apiUpdateSpace, loadSpaces, reportStorage } from '@shared/api';
+import {
+  deleteSpace as apiDeleteSpace,
+  updateSpace as apiUpdateSpace,
+  loadSpaces,
+  reportStorage,
+} from '@shared/api';
 import { supabase } from '@shared/api/supabase';
 import type { Report, Space } from '@shared/lib/types';
 import { create } from 'zustand';
@@ -18,6 +23,7 @@ interface AppStore {
   loadReports: () => Promise<void>;
   generateReport: () => Promise<{ success: boolean; error?: string }>;
   deleteReport: (id: string) => Promise<void>;
+  removeSpace: (id: string) => Promise<void>;
   updateSpaceSettings: (updates: Partial<Space>) => void;
   clearError: () => void;
 }
@@ -138,6 +144,14 @@ export const useAppStore = create<AppStore>()(
           } catch (err) {
             console.error('deleteReport error:', err);
           }
+        },
+
+        removeSpace: async (id: string) => {
+          await apiDeleteSpace(id);
+          const remaining = get().spaces.filter((s) => s.id !== id);
+          const newActiveId = remaining[0]?.id ?? null;
+          set({ spaces: remaining, activeSpaceId: newActiveId, reports: [] });
+          if (newActiveId) get().loadReports();
         },
 
         updateSpaceSettings: (updates: Partial<Space>) => {

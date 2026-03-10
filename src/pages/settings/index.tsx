@@ -10,9 +10,19 @@ import {
   CardHeader,
   CardTitle,
 } from '@shared/ui';
-import { ArrowLeft, Database, FileText, Globe, Mail, Radio, Settings, Zap } from 'lucide-react';
+import {
+  ArrowLeft,
+  Database,
+  FileText,
+  Globe,
+  Mail,
+  Radio,
+  Settings,
+  Trash2,
+  Zap,
+} from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { Link, Navigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 
 function DomainPromptCard() {
   const activeSpace = useAppStore((s) => s.spaces.find((sp) => sp.id === s.activeSpaceId));
@@ -255,7 +265,78 @@ export function SpaceSettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        <DeleteSpaceCard spaceId={space.id} spaceName={space.name} />
       </div>
     </main>
+  );
+}
+
+function DeleteSpaceCard({ spaceId, spaceName }: { spaceId: string; spaceName: string }) {
+  const removeSpace = useAppStore((s) => s.removeSpace);
+  const spaces = useAppStore((s) => s.spaces);
+  const navigate = useNavigate();
+  const [confirming, setConfirming] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const isLastSpace = spaces.length <= 1;
+
+  const handleDelete = async () => {
+    setIsDeleting(true);
+    try {
+      await removeSpace(spaceId);
+      navigate('/');
+    } catch (err) {
+      console.error('Failed to delete space:', err);
+      setIsDeleting(false);
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <Card className="border-signal-high/30">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Trash2 className="h-5 w-5 text-signal-high" />
+          <CardTitle className="text-signal-high">Danger Zone</CardTitle>
+        </div>
+        <CardDescription>Irreversible actions for this space</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLastSpace ? (
+          <p className="text-sm text-muted-foreground">
+            This is the only space — it cannot be deleted. Create another space first.
+          </p>
+        ) : confirming ? (
+          <div className="space-y-3">
+            <p className="text-sm text-foreground">
+              Delete <strong>{spaceName}</strong> and all its reports? This cannot be undone.
+            </p>
+            <div className="flex items-center gap-3">
+              <Button variant="destructive" size="sm" onClick={handleDelete} loading={isDeleting}>
+                Yes, delete space
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirming(false)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              Delete this space, its settings, and all reports.
+            </p>
+            <Button variant="outline" size="sm" onClick={() => setConfirming(true)}>
+              Delete space
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
