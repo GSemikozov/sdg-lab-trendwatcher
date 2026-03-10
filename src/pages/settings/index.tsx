@@ -150,12 +150,12 @@ export function SpaceSettingsPage() {
 
   const space = spaces.find((s) => s.slug === slug);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sync activeSpaceId with URL slug
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sync store with URL slug
   useEffect(() => {
     if (space && space.id !== activeSpaceId) {
       setActiveSpace(space.id);
     }
-  }, [space?.id]);
+  }, [space?.id, activeSpaceId]);
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 

@@ -27,16 +27,15 @@ export function SpaceDashboardPage() {
 
   const space = spaces.find((s) => s.slug === slug);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sync activeSpaceId with URL slug
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sync store with URL slug and load reports
   useEffect(() => {
-    if (space && space.id !== activeSpaceId) {
+    if (!space) return;
+    if (space.id !== activeSpaceId) {
       setActiveSpace(space.id);
+    } else {
+      loadReports();
     }
   }, [space?.id]);
-
-  useEffect(() => {
-    if (activeSpaceId) loadReports();
-  }, [loadReports, activeSpaceId]);
 
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
 

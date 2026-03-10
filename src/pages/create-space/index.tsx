@@ -5,12 +5,18 @@ import { ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
+const DEFAULT_PROMPT_TEMPLATE = `You are a trend analyst for [Company Name], a company building [what you build].
+
+Your job: analyze Reddit posts and extract ACTIONABLE signals that help founders decide what to build next.
+
+Domain focus: [list 5-7 keywords describing your domain, target audience, and product area].`;
+
 export function CreateSpacePage() {
   const loadSpaces = useAppStore((s) => s.loadSpaces);
   const setActiveSpace = useAppStore((s) => s.setActiveSpace);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [domainPrompt, setDomainPrompt] = useState('');
+  const [domainPrompt, setDomainPrompt] = useState(DEFAULT_PROMPT_TEMPLATE);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState('');
   const navigate = useNavigate();
@@ -105,13 +111,12 @@ export function CreateSpacePage() {
               id="space-prompt"
               value={domainPrompt}
               onChange={(e) => setDomainPrompt(e.target.value)}
-              rows={5}
-              placeholder="You are a trend analyst for [Company], a company building..."
+              rows={7}
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none resize-y"
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              Describes the company context and domain focus for AI analysis. Can be edited later in
-              Settings.
+              Replace the [bracketed] sections with your project details. This tells the AI what
+              domain and audience to focus on. Can be edited later in Settings.
             </p>
           </div>
 
