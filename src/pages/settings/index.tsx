@@ -1,6 +1,5 @@
 import { EmailRecipients } from '@features/configure-email';
 import { SubredditPicker } from '@features/configure-subreddits';
-import { SpaceSwitcher } from '@features/switch-space';
 import { useAppStore } from '@shared/lib/store';
 import {
   Badge,
@@ -13,7 +12,7 @@ import {
 } from '@shared/ui';
 import { ArrowLeft, Database, FileText, Globe, Mail, Radio, Settings, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate, useParams } from 'react-router-dom';
 
 function DomainPromptCard() {
   const activeSpace = useAppStore((s) => s.spaces.find((sp) => sp.id === s.activeSpaceId));
@@ -141,31 +140,48 @@ function SpaceInfoCard() {
   );
 }
 
-export function SettingsPage() {
+export function SpaceSettingsPage() {
+  const { slug } = useParams<{ slug: string }>();
+
+  const spaces = useAppStore((s) => s.spaces);
+  const settingsLoaded = useAppStore((s) => s.settingsLoaded);
+  const activeSpaceId = useAppStore((s) => s.activeSpaceId);
+  const setActiveSpace = useAppStore((s) => s.setActiveSpace);
+
+  const space = spaces.find((s) => s.slug === slug);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sync activeSpaceId with URL slug
+  useEffect(() => {
+    if (space && space.id !== activeSpaceId) {
+      setActiveSpace(space.id);
+    }
+  }, [space?.id]);
+
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 
-  return (
-    <div className="min-h-screen">
-      <header className="border-b border-border bg-card/50 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-3xl items-center gap-4 px-6 py-4">
-          <Link
-            to="/"
-            className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Dashboard
-          </Link>
-          <div className="flex items-center gap-2">
-            <Settings className="h-5 w-5 text-muted-foreground" />
-            <h1 className="text-lg font-bold text-foreground">Settings</h1>
-          </div>
-          <div className="ml-auto">
-            <SpaceSwitcher />
-          </div>
-        </div>
-      </header>
+  if (!settingsLoaded) return null;
 
-      <main className="mx-auto max-w-3xl space-y-6 px-6 py-6">
+  if (!space) {
+    return <Navigate to="/" replace />;
+  }
+
+  return (
+    <main className="mx-auto max-w-3xl px-6 py-6">
+      <div className="mb-6 flex items-center gap-4">
+        <Link
+          to={`/spaces/${slug}`}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {space.name}
+        </Link>
+        <div className="flex items-center gap-2">
+          <Settings className="h-5 w-5 text-muted-foreground" />
+          <h2 className="text-lg font-bold text-foreground">Settings</h2>
+        </div>
+      </div>
+
+      <div className="space-y-6">
         <SpaceInfoCard />
 
         <Card>
@@ -239,7 +255,7 @@ export function SettingsPage() {
             </div>
           </CardContent>
         </Card>
-      </main>
-    </div>
+      </div>
+    </main>
   );
 }

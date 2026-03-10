@@ -1,8 +1,11 @@
-import { DashboardPage } from '@pages/dashboard';
-import { SettingsPage } from '@pages/settings';
+import { CreateSpacePage } from '@pages/create-space';
+import { SpaceDashboardPage } from '@pages/dashboard';
+import { HomePage } from '@pages/home';
+import { SpaceSettingsPage } from '@pages/settings';
 import { useAppStore } from '@shared/lib/store';
 import { useEffect } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { AppLayout } from './layout';
 import { AppProvider } from './providers';
 
 export function App() {
@@ -16,9 +19,13 @@ export function App() {
     <AppProvider>
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route element={<AppLayout />}>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/spaces/new" element={<CreateSpacePage />} />
+            <Route path="/spaces/:slug" element={<SpaceDashboardPage />} />
+            <Route path="/spaces/:slug/settings" element={<SpaceSettingsPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
         </Routes>
       </BrowserRouter>
     </AppProvider>

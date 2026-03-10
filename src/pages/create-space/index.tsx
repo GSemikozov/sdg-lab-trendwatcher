@@ -1,15 +1,11 @@
 import { createSpace } from '@shared/api';
 import { useAppStore } from '@shared/lib/store';
-import { Button } from '@shared/ui';
-import { X } from 'lucide-react';
+import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@shared/ui';
+import { ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 
-interface Props {
-  open: boolean;
-  onClose: () => void;
-}
-
-export function CreateSpaceDialog({ open, onClose }: Props) {
+export function CreateSpacePage() {
   const loadSpaces = useAppStore((s) => s.loadSpaces);
   const setActiveSpace = useAppStore((s) => s.setActiveSpace);
   const [name, setName] = useState('');
@@ -17,8 +13,7 @@ export function CreateSpaceDialog({ open, onClose }: Props) {
   const [domainPrompt, setDomainPrompt] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState('');
-
-  if (!open) return null;
+  const navigate = useNavigate();
 
   const handleCreate = async () => {
     if (!name.trim()) {
@@ -45,10 +40,7 @@ export function CreateSpaceDialog({ open, onClose }: Props) {
       });
       await loadSpaces();
       setActiveSpace(space.id);
-      setName('');
-      setDescription('');
-      setDomainPrompt('');
-      onClose();
+      navigate(`/spaces/${space.slug}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create space');
     } finally {
@@ -57,20 +49,23 @@ export function CreateSpaceDialog({ open, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-foreground">Create New Space</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground cursor-pointer"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
+    <main className="mx-auto max-w-2xl px-6 py-8">
+      <Link
+        to="/"
+        className="mb-6 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Back to spaces
+      </Link>
 
-        <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-xl">Create New Space</CardTitle>
+          <CardDescription>
+            Each space monitors its own set of subreddits and generates independent reports
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
           <div>
             <label htmlFor="space-name" className="mb-1 block text-sm font-medium text-foreground">
               Name *
@@ -122,16 +117,16 @@ export function CreateSpaceDialog({ open, onClose }: Props) {
 
           {error && <p className="text-sm text-signal-high">{error}</p>}
 
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={onClose}>
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="outline" onClick={() => navigate('/')}>
               Cancel
             </Button>
             <Button onClick={handleCreate} loading={isCreating}>
               Create Space
             </Button>
           </div>
-        </div>
-      </div>
-    </div>
+        </CardContent>
+      </Card>
+    </main>
   );
 }
