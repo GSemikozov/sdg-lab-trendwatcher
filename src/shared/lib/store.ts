@@ -1,6 +1,6 @@
 import { updateSpace as apiUpdateSpace, loadSpaces, reportStorage } from '@shared/api';
 import { supabase } from '@shared/api/supabase';
-import type { Space } from '@shared/lib/types';
+import type { Report, Space } from '@shared/lib/types';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 

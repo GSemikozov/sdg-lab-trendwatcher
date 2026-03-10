@@ -20,7 +20,7 @@ function DomainPromptCard() {
   const updateSpaceSettings = useAppStore((s) => s.updateSpaceSettings);
   const [value, setValue] = useState('');
   const [saved, setSaved] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const spaceDomainPrompt = activeSpace?.domainPrompt;
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset form when space changes
@@ -75,7 +75,7 @@ function SpaceInfoCard() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [saved, setSaved] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const spaceName = activeSpace?.name;
   const spaceDesc = activeSpace?.description;
