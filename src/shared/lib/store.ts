@@ -140,8 +140,12 @@ export const useAppStore = create<AppStore>()(
         },
 
         setSubreddits: (subreddits) => {
-          set({ subreddits });
-          const names = subreddits.filter((s) => s.enabled).map((s) => s.name);
+          const sanitized = subreddits.map((s) => ({
+            ...s,
+            name: s.name.replace(/\/+$/, ''),
+          }));
+          set({ subreddits: sanitized });
+          const names = sanitized.filter((s) => s.enabled).map((s) => s.name);
           saveSettings({ subreddits: names }).catch((err) =>
             console.error('Failed to sync subreddits:', err)
           );

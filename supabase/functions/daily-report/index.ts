@@ -518,6 +518,8 @@ Deno.serve(async (req) => {
       }
     }
 
+    subreddits = subreddits.map((s) => s.replace(/\/+$/, '').trim()).filter(Boolean);
+
     const redditClientId = Deno.env.get('REDDIT_CLIENT_ID');
     const redditClientSecret = Deno.env.get('REDDIT_CLIENT_SECRET');
 

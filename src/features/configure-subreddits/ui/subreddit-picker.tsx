@@ -33,8 +33,11 @@ export function SubredditPicker() {
     setSubreddits(subreddits.filter((s) => s.name !== name));
   };
 
+  const sanitizeName = (raw: string) =>
+    raw.trim().toLowerCase().replace(/^r\//, '').replace(/\/+$/, '');
+
   const addCustom = () => {
-    const name = customInput.trim().toLowerCase().replace(/^r\//, '');
+    const name = sanitizeName(customInput);
     if (name && !subreddits.some((s) => s.name === name)) {
       setSubreddits([...subreddits, { name, enabled: true, category: 'custom' }]);
       setCustomInput('');
