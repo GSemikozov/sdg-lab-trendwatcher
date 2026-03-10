@@ -6,10 +6,16 @@ import { useState } from 'react';
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function EmailRecipients() {
-  const recipients = useAppStore((s) => s.emailRecipients);
-  const setRecipients = useAppStore((s) => s.setEmailRecipients);
+  const activeSpace = useAppStore((s) => s.spaces.find((sp) => sp.id === s.activeSpaceId));
+  const updateSpaceSettings = useAppStore((s) => s.updateSpaceSettings);
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
+
+  const recipients = activeSpace?.emailRecipients ?? [];
+
+  const setRecipients = (newRecipients: string[]) => {
+    updateSpaceSettings({ emailRecipients: newRecipients });
+  };
 
   const addEmail = () => {
     const email = input.trim().toLowerCase();

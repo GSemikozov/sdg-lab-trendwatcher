@@ -1,4 +1,5 @@
 import { GenerateReportButton } from '@features/generate-report';
+import { SpaceSwitcher } from '@features/switch-space';
 import { compareReports } from '@shared/lib/report-diff';
 import { useAppStore } from '@shared/lib/store';
 import { Badge, Skeleton } from '@shared/ui';
@@ -18,18 +19,28 @@ export function DashboardPage() {
   const loadReports = useAppStore((s) => s.loadReports);
   const deleteReport = useAppStore((s) => s.deleteReport);
   const clearError = useAppStore((s) => s.clearError);
+  const activeSpaceId = useAppStore((s) => s.activeSpaceId);
+  const spaces = useAppStore((s) => s.spaces);
+
+  const activeSpace = spaces.find((s) => s.id === activeSpaceId);
+  const hasSubreddits = (activeSpace?.subreddits.length ?? 0) > 0;
 
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadReports();
-  }, [loadReports]);
+    if (activeSpaceId) loadReports();
+  }, [loadReports, activeSpaceId]);
 
   useEffect(() => {
     if (reports.length > 0 && !selectedReportId) {
       setSelectedReportId(reports[0].id);
     }
   }, [reports, selectedReportId]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset selection when space changes
+  useEffect(() => {
+    setSelectedReportId(null);
+  }, [activeSpaceId]);
 
   const selectedReport = reports.find((r) => r.id === selectedReportId) ?? null;
 
@@ -45,14 +56,17 @@ export function DashboardPage() {
     <div className="min-h-screen">
       <header className="border-b border-border bg-card/50 backdrop-blur-sm">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
-              <BarChart3 className="h-5 w-5 text-primary-foreground" />
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
+                <BarChart3 className="h-5 w-5 text-primary-foreground" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold text-foreground">TrendWatcher</h1>
+                <p className="text-xs text-muted-foreground">Signal intelligence</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-lg font-bold text-foreground">TrendWatcher</h1>
-              <p className="text-xs text-muted-foreground">SDG Lab signal intelligence</p>
-            </div>
+            <SpaceSwitcher />
           </div>
           <div className="flex items-center gap-3">
             <Badge variant="info">MVP</Badge>
@@ -68,9 +82,9 @@ export function DashboardPage() {
       </header>
 
       <main className="mx-auto max-w-7xl px-6 py-6">
-        {!useAppStore((s) => s.subreddits.some((sub) => sub.enabled)) && (
+        {!hasSubreddits && (
           <div className="mb-4 flex items-center justify-between rounded-lg border border-signal-medium/30 bg-signal-medium/10 px-4 py-3 text-sm text-signal-medium">
-            <span>No subreddits enabled — configure at least one to generate reports.</span>
+            <span>No subreddits configured for this space — add them in Settings.</span>
             <Link to="/settings" className="font-medium hover:underline">
               Go to Settings
             </Link>
@@ -96,7 +110,7 @@ export function DashboardPage() {
             <Skeleton className="h-40 w-full" />
           </div>
         ) : reports.length === 0 ? (
-          <EmptyState />
+          <EmptyState spaceName={activeSpace?.name} />
         ) : (
           <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
             <aside className="space-y-3">
@@ -135,7 +149,7 @@ export function DashboardPage() {
   );
 }
 
-function EmptyState() {
+function EmptyState({ spaceName }: { spaceName?: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-24">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
@@ -143,9 +157,9 @@ function EmptyState() {
       </div>
       <h2 className="mt-6 text-xl font-semibold text-foreground">No reports yet</h2>
       <p className="mt-2 max-w-md text-center text-sm text-muted-foreground">
-        Generate your first report to analyze Reddit discussions across loneliness, depression, and
-        social skills communities. The system will identify emerging topics, growing trends, pain
-        points, and product hypotheses.
+        Generate your first report for <strong>{spaceName ?? 'this space'}</strong> to analyze
+        Reddit discussions. The system will identify emerging topics, growing trends, pain points,
+        and product hypotheses.
       </p>
       <div className="mt-6">
         <GenerateReportButton />

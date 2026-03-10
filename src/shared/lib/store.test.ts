@@ -1,42 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppStore } from './store';
 
-const mockReport = {
-  id: 'report-1',
-  created_at: new Date().toISOString(),
-  date_from: new Date().toISOString(),
-  date_to: new Date().toISOString(),
-  subreddits: ['lonely'],
-  total_posts_analyzed: 10,
-  summary: 'Test summary',
-  signals: [
-    {
-      id: 'sig-1',
-      category: 'emerging_topic',
-      title: 'Test signal',
-      description: 'Test description',
-      strength: 'high',
-      sentiment: 'mixed',
-      postCount: 5,
-      subreddits: ['lonely'],
-    },
-  ],
-  raw_post_count: { lonely: 10 },
+const mockSpace = {
+  id: 'space-1',
+  name: 'Test Space',
+  slug: 'test-space',
+  description: 'Test description',
+  domainPrompt: 'You are a test analyst',
+  subreddits: ['lonely', 'depression', 'socialskills'],
+  emailRecipients: ['test@test.com'],
+  isActive: true,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
 };
 
 const mockGetAll = vi.fn().mockResolvedValue([]);
 const mockDeleteFn = vi.fn().mockResolvedValue(undefined);
 
-const mockSaveSettings = vi.fn().mockResolvedValue(undefined);
-const mockLoadSettings = vi.fn().mockResolvedValue(null);
+const mockLoadSpaces = vi.fn().mockResolvedValue([mockSpace]);
+const mockUpdateSpace = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('@shared/api', () => ({
   reportStorage: {
     getAll: (...args: unknown[]) => mockGetAll(...args),
     delete: (...args: unknown[]) => mockDeleteFn(...args),
   },
-  saveSettings: (...args: unknown[]) => mockSaveSettings(...args),
-  loadSettings: (...args: unknown[]) => mockLoadSettings(...args),
+  loadSpaces: (...args: unknown[]) => mockLoadSpaces(...args),
+  updateSpace: (...args: unknown[]) => mockUpdateSpace(...args),
 }));
 
 const mockInvoke = vi.fn();
@@ -49,25 +39,29 @@ vi.mock('@shared/api/supabase', () => ({
   },
 }));
 
+function setActiveSpace() {
+  useAppStore.setState({
+    spaces: [mockSpace],
+    activeSpaceId: mockSpace.id,
+  });
+}
+
 describe('useAppStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useAppStore.setState({
+      spaces: [],
+      activeSpaceId: null,
       reports: [],
       isLoading: false,
       isGenerating: false,
       error: null,
+      settingsLoaded: false,
     });
   });
 
-  it('should have default subreddits', () => {
-    const { subreddits } = useAppStore.getState();
-    expect(subreddits).toHaveLength(3);
-    expect(subreddits.map((s) => s.name)).toEqual(['lonely', 'depression', 'socialskills']);
-    expect(subreddits.every((s) => s.enabled)).toBe(true);
-  });
-
   it('should generate a report via Edge Function', async () => {
+    setActiveSpace();
     mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
     mockGetAll.mockResolvedValue([
       {
@@ -77,8 +71,9 @@ describe('useAppStore', () => {
         subreddits: ['lonely'],
         totalPostsAnalyzed: 10,
         summary: 'Test summary',
-        signals: [mockReport.signals[0]],
+        signals: [],
         rawPostCount: { lonely: 10 },
+        spaceId: mockSpace.id,
       },
     ]);
 
@@ -87,15 +82,19 @@ describe('useAppStore', () => {
 
     expect(result.success).toBe(true);
     expect(mockInvoke).toHaveBeenCalledWith('daily-report', {
-      body: { subreddits: ['lonely', 'depression', 'socialskills'] },
+      body: {
+        space_id: mockSpace.id,
+        subreddits: ['lonely', 'depression', 'socialskills'],
+        emailRecipients: ['test@test.com'],
+      },
     });
 
     const { reports } = useAppStore.getState();
     expect(reports).toHaveLength(1);
-    expect(reports[0].signals.length).toBeGreaterThan(0);
   });
 
   it('should handle Edge Function error', async () => {
+    setActiveSpace();
     mockInvoke.mockResolvedValue({ data: null, error: { message: 'Function failed' } });
 
     const { generateReport } = useAppStore.getState();
@@ -106,16 +105,14 @@ describe('useAppStore', () => {
     expect(useAppStore.getState().error).toBe('Function failed');
   });
 
-  it('should update subreddits', () => {
-    const { setSubreddits } = useAppStore.getState();
-    setSubreddits([
-      { name: 'lonely', enabled: true, category: 'core' },
-      { name: 'mentalhealth', enabled: true, category: 'core' },
-    ]);
+  it('should update space settings', () => {
+    setActiveSpace();
+    const { updateSpaceSettings } = useAppStore.getState();
+    updateSpaceSettings({ subreddits: ['lonely', 'mentalhealth'] });
 
-    const { subreddits } = useAppStore.getState();
-    expect(subreddits).toHaveLength(2);
-    expect(subreddits[1].name).toBe('mentalhealth');
+    const { spaces } = useAppStore.getState();
+    const space = spaces.find((s) => s.id === mockSpace.id);
+    expect(space?.subreddits).toEqual(['lonely', 'mentalhealth']);
   });
 
   it('should clear error', () => {
@@ -146,5 +143,12 @@ describe('useAppStore', () => {
 
     expect(mockDeleteFn).toHaveBeenCalledWith('r1');
     expect(useAppStore.getState().reports).toHaveLength(0);
+  });
+
+  it('should fail to generate report without active space', async () => {
+    const { generateReport } = useAppStore.getState();
+    const result = await generateReport();
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('No space selected');
   });
 });

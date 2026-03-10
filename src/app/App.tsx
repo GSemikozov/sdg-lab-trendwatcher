@@ -6,11 +6,11 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppProvider } from './providers';
 
 export function App() {
-  const loadSettingsFn = useAppStore((s) => s.loadSettings);
+  const loadSpaces = useAppStore((s) => s.loadSpaces);
 
   useEffect(() => {
-    loadSettingsFn();
-  }, [loadSettingsFn]);
+    loadSpaces();
+  }, [loadSpaces]);
 
   return (
     <AppProvider>

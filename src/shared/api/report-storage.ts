@@ -3,9 +3,9 @@ import { supabase } from './supabase';
 
 export interface ReportStorage {
   save(report: Report): Promise<void>;
-  getAll(): Promise<Report[]>;
+  getAll(spaceId?: string): Promise<Report[]>;
   getById(id: string): Promise<Report | null>;
-  getLatest(): Promise<Report | null>;
+  getLatest(spaceId?: string): Promise<Report | null>;
   delete(id: string): Promise<void>;
 }
 
@@ -19,6 +19,7 @@ interface ReportRow {
   summary: string;
   signals: Signal[];
   raw_post_count: Record<string, number>;
+  space_id?: string;
 }
 
 function rowToReport(row: ReportRow): Report {
@@ -31,6 +32,7 @@ function rowToReport(row: ReportRow): Report {
     summary: row.summary,
     signals: row.signals,
     rawPostCount: row.raw_post_count,
+    spaceId: row.space_id,
   };
 }
 
@@ -45,6 +47,7 @@ function reportToRow(report: Report) {
     summary: report.summary,
     signals: report.signals,
     raw_post_count: report.rawPostCount,
+    space_id: report.spaceId,
   };
 }
 
@@ -54,12 +57,14 @@ export class SupabaseReportStorage implements ReportStorage {
     if (error) throw new Error(`Failed to save report: ${error.message}`);
   }
 
-  async getAll(): Promise<Report[]> {
-    const { data, error } = await supabase
-      .from('reports')
-      .select('*')
-      .order('created_at', { ascending: false });
+  async getAll(spaceId?: string): Promise<Report[]> {
+    let query = supabase.from('reports').select('*').order('created_at', { ascending: false });
 
+    if (spaceId) {
+      query = query.eq('space_id', spaceId);
+    }
+
+    const { data, error } = await query;
     if (error) throw new Error(`Failed to load reports: ${error.message}`);
     return (data as ReportRow[]).map(rowToReport);
   }
@@ -71,13 +76,18 @@ export class SupabaseReportStorage implements ReportStorage {
     return rowToReport(data as ReportRow);
   }
 
-  async getLatest(): Promise<Report | null> {
-    const { data, error } = await supabase
+  async getLatest(spaceId?: string): Promise<Report | null> {
+    let query = supabase
       .from('reports')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+      .limit(1);
+
+    if (spaceId) {
+      query = query.eq('space_id', spaceId);
+    }
+
+    const { data, error } = await query.single();
 
     if (error) return null;
     return rowToReport(data as ReportRow);

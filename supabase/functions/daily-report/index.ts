@@ -2,30 +2,10 @@
  * Supabase Edge Function: daily-report
  *
  * Triggered by pg_cron (daily) or manual HTTP call.
- * Fetches Reddit posts → analyzes via OpenAI → stores report → sends email via Resend.
+ * Supports multi-space: each space has its own subreddits, recipients, and domain prompt.
  *
- * Environment variables (set in Supabase dashboard):
- *   OPENAI_API_KEY    - OpenAI API key
- *   RESEND_API_KEY    - Resend API key
- *   EMAIL_RECIPIENTS  - Comma-separated email addresses
- *   SUBREDDITS        - Comma-separated subreddit names (default: lonely,depression,socialskills)
- *   SUPABASE_URL      - Auto-provided by Supabase
- *   SUPABASE_SERVICE_ROLE_KEY - Auto-provided by Supabase
- *
- * pg_cron setup (run in Supabase SQL Editor):
- *   select cron.schedule(
- *     'daily-trendwatcher-report',
- *     '0 9 * * *',  -- every day at 09:00 UTC
- *     $$
- *     select net.http_post(
- *       url := 'https://<project-ref>.supabase.co/functions/v1/daily-report',
- *       headers := jsonb_build_object(
- *         'Authorization', 'Bearer ' || current_setting('supabase.service_role_key')
- *       ),
- *       body := '{}'::jsonb
- *     );
- *     $$
- *   );
+ * Manual call: POST with { space_id, subreddits?, emailRecipients? }
+ * Cron call: POST with empty body → processes ALL active spaces sequentially.
  */
 
 const REDDIT_BASE = 'https://www.reddit.com';
@@ -56,6 +36,14 @@ interface Signal {
   postCount: number;
   subreddits: string[];
   growthPercent?: number;
+}
+
+interface SpaceConfig {
+  id: string;
+  name: string;
+  domain_prompt: string;
+  subreddits: string[];
+  email_recipients: string[];
 }
 
 // --- Reddit OAuth ---
@@ -102,11 +90,9 @@ function parseRedditJson(json: Record<string, unknown>): RedditPost[] {
     ?.data?.children ?? [];
 
   const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
-  const posts = children
+  return children
     .filter((p) => p.data.created_utc > cutoff)
     .map((p) => p.data);
-
-  return posts;
 }
 
 async function fetchWithOAuth(
@@ -190,7 +176,6 @@ async function fetchSubreddit(
   subreddit: string,
   oauthToken?: string
 ): Promise<RedditPost[]> {
-  // Strategy 1: OAuth (production, bypasses IP blocks)
   if (oauthToken) {
     console.log(`[reddit] r/${subreddit}: trying OAuth`);
     try {
@@ -202,7 +187,6 @@ async function fetchSubreddit(
     }
   }
 
-  // Strategy 2: Direct (works locally, blocked from cloud IPs)
   console.log(`[reddit] r/${subreddit}: trying direct`);
   try {
     const posts = await fetchDirect(subreddit);
@@ -212,7 +196,6 @@ async function fetchSubreddit(
     console.error(`[reddit] r/${subreddit}: direct failed:`, err);
   }
 
-  // Strategy 3: RSS feed fallback (MVP workaround for cloud IPs)
   console.log(`[reddit] r/${subreddit}: trying RSS fallback`);
   const posts = await fetchViaRss(subreddit);
   console.log(`[reddit] r/${subreddit}: RSS OK, ${posts.length} posts`);
@@ -248,9 +231,7 @@ async function fetchAllSubreddits(
 
 // --- OpenAI ---
 
-const SYSTEM_PROMPT = `You are a trend analyst for SDG Lab, a company building products for people struggling with loneliness, depression, and social connection.
-
-Your job: analyze Reddit posts and extract ACTIONABLE signals that help founders decide what to build next.
+const BASE_PROMPT = `Your job: analyze Reddit posts and extract ACTIONABLE signals that help founders decide what to build next.
 
 Return JSON with this exact structure:
 {
@@ -279,14 +260,20 @@ Quality rules:
 - 3-5 signals per category, prioritized by strength
 - Every signal must be grounded in specific posts — don't invent patterns
 - Prefer concrete ("users ask for AI chat companions at 2-3am") over vague ("loneliness is discussed")
-- Strength = high means 10+ posts with strong engagement, medium = 3-9 posts, low = emerging pattern in 1-2 posts
+- Strength = high means 10+ posts with strong engagement, medium = 3-9 posts, low = emerging pattern in 1-2 posts`;
 
-Domain focus: loneliness, companionship, emotional support, peer communication, mental health tools, social anxiety, relationship building.`;
+function buildSystemPrompt(domainPrompt: string): string {
+  if (domainPrompt.trim()) {
+    return `${domainPrompt.trim()}\n\n${BASE_PROMPT}`;
+  }
+  return `You are a general trend analyst.\n\n${BASE_PROMPT}`;
+}
 
 async function analyzeWithOpenAI(
   posts: RedditPost[],
   subreddits: string[],
-  apiKey: string
+  apiKey: string,
+  domainPrompt: string
 ): Promise<{ summary: string; signals: Signal[] }> {
   const postsText = posts
     .slice(0, 200)
@@ -306,7 +293,7 @@ async function analyzeWithOpenAI(
       model: 'gpt-4o-mini',
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: buildSystemPrompt(domainPrompt) },
         {
           role: 'user',
           content: `Analyze ${posts.length} posts from ${subreddits.join(', ')} (last 48h):\n\n${postsText}`,
@@ -333,7 +320,8 @@ function buildEmailHtml(
   signals: Signal[],
   totalPosts: number,
   subreddits: string[],
-  topPosts: RedditPost[]
+  topPosts: RedditPost[],
+  spaceName: string
 ): string {
   const date = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -397,6 +385,7 @@ function buildEmailHtml(
 <div style="max-width:640px;margin:0 auto;padding:32px 20px;">
   <div style="text-align:center;margin-bottom:32px;">
     <h1 style="color:#8b5cf6;font-size:24px;margin:0;">📊 TrendWatcher Report</h1>
+    <p style="color:#a78bfa;font-size:14px;margin:4px 0 0;font-weight:600;">${spaceName}</p>
     <p style="color:#71717a;font-size:14px;margin:8px 0 0;">${date}</p>
   </div>
   <div style="background:#18181b;border:1px solid #27272a;border-radius:12px;padding:20px;margin-bottom:24px;">
@@ -415,7 +404,7 @@ function buildEmailHtml(
     </div>`).join('')}
   </div>` : ''}
   <div style="text-align:center;padding-top:24px;border-top:1px solid #27272a;">
-    <p style="color:#52525b;font-size:12px;margin:0;">TrendWatcher by SDG Lab</p>
+    <p style="color:#52525b;font-size:12px;margin:0;">TrendWatcher · ${spaceName}</p>
   </div>
 </div></body></html>`;
 }
@@ -424,7 +413,8 @@ async function sendEmail(
   html: string,
   recipients: string[],
   apiKey: string,
-  senderEmail: string
+  senderEmail: string,
+  spaceName: string
 ): Promise<void> {
   const date = new Date().toLocaleDateString('en-US', {
     month: 'short',
@@ -441,7 +431,7 @@ async function sendEmail(
     body: JSON.stringify({
       sender: { name: 'TrendWatcher', email: senderEmail },
       to: recipients.map((email) => ({ email })),
-      subject: `📊 TrendWatcher Report — ${date}`,
+      subject: `📊 ${spaceName} — TrendWatcher Report — ${date}`,
       htmlContent: html,
     }),
   });
@@ -450,6 +440,88 @@ async function sendEmail(
     const err = await res.text();
     throw new Error(`Brevo error ${res.status}: ${err}`);
   }
+}
+
+// --- Space processing ---
+
+async function processSpace(
+  space: SpaceConfig,
+  openaiKey: string,
+  brevoKey: string | undefined,
+  senderEmail: string,
+  supabaseUrl: string,
+  supabaseKey: string,
+  oauthToken: string | undefined
+): Promise<{ spaceId: string; spaceName: string; postsAnalyzed: number; signalsFound: number; emailSent: boolean; error?: string }> {
+  const subreddits = space.subreddits.map((s) => s.replace(/\/+$/, '').trim()).filter(Boolean);
+  const recipients = space.email_recipients;
+
+  console.log(`[space:${space.name}] Fetching posts from: ${subreddits.join(', ')}`);
+  const { posts, errors: redditErrors } = await fetchAllSubreddits(subreddits, oauthToken);
+  console.log(`[space:${space.name}] Fetched ${posts.length} posts, ${redditErrors.length} errors`);
+
+  if (posts.length === 0) {
+    console.warn(`[space:${space.name}] No posts fetched, skipping`);
+    return { spaceId: space.id, spaceName: space.name, postsAnalyzed: 0, signalsFound: 0, emailSent: false, error: 'No posts fetched' };
+  }
+
+  console.log(`[space:${space.name}] Running AI analysis...`);
+  const analysis = await analyzeWithOpenAI(posts, subreddits, openaiKey, space.domain_prompt);
+  console.log(`[space:${space.name}] Found ${analysis.signals.length} signals`);
+
+  const now = new Date().toISOString();
+  const rawPostCount: Record<string, number> = {};
+  for (const sub of subreddits) {
+    rawPostCount[sub] = posts.filter((p) => p.subreddit === sub).length;
+  }
+
+  const report = {
+    id: crypto.randomUUID(),
+    created_at: now,
+    date_from: new Date(Date.now() - PERIOD_HOURS * 3600000).toISOString(),
+    date_to: now,
+    subreddits,
+    total_posts_analyzed: posts.length,
+    summary: analysis.summary,
+    signals: analysis.signals,
+    raw_post_count: rawPostCount,
+    space_id: space.id,
+  };
+
+  const dbRes = await fetch(`${supabaseUrl}/rest/v1/reports`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(report),
+  });
+
+  if (!dbRes.ok) {
+    const dbErr = await dbRes.text();
+    console.error(`[space:${space.name}] DB save error:`, dbErr);
+  } else {
+    console.log(`[space:${space.name}] Report saved to database`);
+  }
+
+  let emailSent = false;
+  if (brevoKey && recipients.length > 0) {
+    try {
+      const topPosts = [...posts]
+        .sort((a, b) => (b.score + b.num_comments) - (a.score + a.num_comments))
+        .slice(0, 15);
+      const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits, topPosts, space.name);
+      await sendEmail(html, recipients, brevoKey, senderEmail, space.name);
+      emailSent = true;
+      console.log(`[space:${space.name}] Email sent to: ${recipients.join(', ')}`);
+    } catch (emailErr) {
+      console.error(`[space:${space.name}] Email failed (non-blocking):`, emailErr);
+    }
+  }
+
+  return { spaceId: space.id, spaceName: space.name, postsAnalyzed: posts.length, signalsFound: analysis.signals.length, emailSent };
 }
 
 // --- Handler ---
@@ -468,60 +540,8 @@ Deno.serve(async (req) => {
     const openaiKey = Deno.env.get('OPENAI_API_KEY');
     const brevoKey = Deno.env.get('BREVO_API_KEY');
     const senderEmail = Deno.env.get('EMAIL_SENDER') ?? 'trendwatcher@sdglab.dev';
-    let recipients = (Deno.env.get('EMAIL_RECIPIENTS') ?? '').split(',').filter(Boolean);
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-
-    let subreddits = (Deno.env.get('SUBREDDITS') ?? 'lonely,depression,socialskills')
-      .split(',')
-      .filter(Boolean);
-
-    let bodyOverrides = false;
-    if (req.method === 'POST') {
-      try {
-        const body = await req.json();
-        if (body.subreddits?.length > 0) {
-          subreddits = body.subreddits;
-          bodyOverrides = true;
-        }
-        if (Array.isArray(body.emailRecipients) && body.emailRecipients.length > 0) {
-          recipients = body.emailRecipients;
-          bodyOverrides = true;
-        }
-      } catch {
-        // no body or invalid JSON — use defaults
-      }
-    }
-
-    if (!bodyOverrides && supabaseUrl && supabaseKey) {
-      try {
-        const settingsRes = await fetch(
-          `${supabaseUrl}/rest/v1/app_settings?id=eq.global&select=subreddits,email_recipients`,
-          {
-            headers: {
-              apikey: supabaseKey,
-              Authorization: `Bearer ${supabaseKey}`,
-            },
-          }
-        );
-        if (settingsRes.ok) {
-          const rows = await settingsRes.json();
-          if (rows.length > 0) {
-            const s = rows[0];
-            if (s.subreddits?.length > 0) subreddits = s.subreddits;
-            if (s.email_recipients?.length > 0) recipients = s.email_recipients;
-            console.log('[daily-report] Using settings from DB');
-          }
-        }
-      } catch (err) {
-        console.error('[daily-report] Failed to load DB settings, using env defaults:', err);
-      }
-    }
-
-    subreddits = subreddits.map((s) => s.replace(/\/+$/, '').trim()).filter(Boolean);
-
-    const redditClientId = Deno.env.get('REDDIT_CLIENT_ID');
-    const redditClientSecret = Deno.env.get('REDDIT_CLIENT_SECRET');
 
     if (!openaiKey) {
       return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not set' }), {
@@ -530,6 +550,16 @@ Deno.serve(async (req) => {
       });
     }
 
+    if (!supabaseUrl || !supabaseKey) {
+      return new Response(JSON.stringify({ error: 'Supabase credentials not set' }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const redditClientId = Deno.env.get('REDDIT_CLIENT_ID');
+    const redditClientSecret = Deno.env.get('REDDIT_CLIENT_SECRET');
+
     let oauthToken: string | undefined;
     if (redditClientId && redditClientSecret) {
       try {
@@ -537,91 +567,83 @@ Deno.serve(async (req) => {
       } catch (err) {
         console.error('[reddit] OAuth failed, falling back to unauthenticated:', err);
       }
-    } else {
-      console.log('[reddit] No OAuth credentials — using unauthenticated access');
     }
 
-    console.log(`[daily-report] Fetching posts from: ${subreddits.join(', ')}`);
-    const { posts, errors: redditErrors } = await fetchAllSubreddits(subreddits, oauthToken);
-    console.log(`[daily-report] Fetched ${posts.length} posts, ${redditErrors.length} errors`);
+    // Parse request body
+    let requestSpaceId: string | undefined;
+    let bodySubreddits: string[] | undefined;
+    let bodyRecipients: string[] | undefined;
 
-    if (posts.length === 0) {
+    if (req.method === 'POST') {
+      try {
+        const body = await req.json();
+        requestSpaceId = body.space_id;
+        if (body.subreddits?.length > 0) bodySubreddits = body.subreddits;
+        if (Array.isArray(body.emailRecipients) && body.emailRecipients.length > 0) bodyRecipients = body.emailRecipients;
+      } catch {
+        // empty body — process all spaces
+      }
+    }
+
+    // Build list of spaces to process
+    const spacesToProcess: SpaceConfig[] = [];
+
+    if (requestSpaceId) {
+      // Manual call with specific space_id
+      const spaceRes = await fetch(
+        `${supabaseUrl}/rest/v1/spaces?id=eq.${requestSpaceId}&select=id,name,domain_prompt,subreddits,email_recipients`,
+        { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+      );
+      if (spaceRes.ok) {
+        const rows = await spaceRes.json();
+        if (rows.length > 0) {
+          const space = rows[0] as SpaceConfig;
+          if (bodySubreddits) space.subreddits = bodySubreddits;
+          if (bodyRecipients) space.email_recipients = bodyRecipients;
+          spacesToProcess.push(space);
+        }
+      }
+    } else {
+      // Cron or no space_id — process all active spaces
+      const spacesRes = await fetch(
+        `${supabaseUrl}/rest/v1/spaces?is_active=eq.true&select=id,name,domain_prompt,subreddits,email_recipients&order=created_at.asc`,
+        { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+      );
+      if (spacesRes.ok) {
+        const rows = await spacesRes.json();
+        spacesToProcess.push(...(rows as SpaceConfig[]));
+      }
+    }
+
+    if (spacesToProcess.length === 0) {
       return new Response(
-        JSON.stringify({
-          error: 'No posts fetched from Reddit',
-          redditErrors,
-          subreddits,
-        }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: 'No spaces found to process' }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log('[daily-report] Running AI analysis...');
-    const analysis = await analyzeWithOpenAI(posts, subreddits, openaiKey);
-    console.log(`[daily-report] Found ${analysis.signals.length} signals`);
+    console.log(`[daily-report] Processing ${spacesToProcess.length} space(s): ${spacesToProcess.map((s) => s.name).join(', ')}`);
 
-    const now = new Date().toISOString();
-    const rawPostCount: Record<string, number> = {};
-    for (const sub of subreddits) {
-      rawPostCount[sub] = posts.filter((p) => p.subreddit === sub).length;
-    }
-
-    if (supabaseUrl && supabaseKey) {
-      const report = {
-        id: crypto.randomUUID(),
-        created_at: now,
-        date_from: new Date(Date.now() - PERIOD_HOURS * 3600000).toISOString(),
-        date_to: now,
-        subreddits,
-        total_posts_analyzed: posts.length,
-        summary: analysis.summary,
-        signals: analysis.signals,
-        raw_post_count: rawPostCount,
-      };
-
-      const dbRes = await fetch(`${supabaseUrl}/rest/v1/reports`, {
-        method: 'POST',
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=minimal',
-        },
-        body: JSON.stringify(report),
-      });
-
-      if (!dbRes.ok) {
-        const dbErr = await dbRes.text();
-        console.error('[daily-report] DB save error:', dbErr);
-      } else {
-        console.log('[daily-report] Report saved to database');
-      }
-    }
-
-    let emailSent = false;
-    if (brevoKey && recipients.length > 0) {
+    const results = [];
+    for (const space of spacesToProcess) {
       try {
-        const topPosts = [...posts]
-          .sort((a, b) => (b.score + b.num_comments) - (a.score + a.num_comments))
-          .slice(0, 15);
-        const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits, topPosts);
-        await sendEmail(html, recipients, brevoKey, senderEmail);
-        emailSent = true;
-        console.log(`[daily-report] Email sent to: ${recipients.join(', ')}`);
-      } catch (emailErr) {
-        console.error('[daily-report] Email failed (non-blocking):', emailErr);
+        const result = await processSpace(space, openaiKey, brevoKey, senderEmail, supabaseUrl, supabaseKey, oauthToken);
+        results.push(result);
+      } catch (err) {
+        console.error(`[space:${space.name}] Fatal error:`, err);
+        results.push({
+          spaceId: space.id,
+          spaceName: space.name,
+          postsAnalyzed: 0,
+          signalsFound: 0,
+          emailSent: false,
+          error: err instanceof Error ? err.message : 'Unknown error',
+        });
       }
-    } else {
-      console.log('[daily-report] Skipping email (no key or no recipients)');
     }
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        postsAnalyzed: posts.length,
-        signalsFound: analysis.signals.length,
-        emailSent,
-      }),
+      JSON.stringify({ success: true, spaces: results }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (err) {

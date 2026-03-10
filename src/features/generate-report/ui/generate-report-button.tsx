@@ -5,16 +5,17 @@ import { FileText } from 'lucide-react';
 export function GenerateReportButton() {
   const isGenerating = useAppStore((s) => s.isGenerating);
   const generateReport = useAppStore((s) => s.generateReport);
-  const hasEnabled = useAppStore((s) => s.subreddits.some((sub) => sub.enabled));
+  const activeSpace = useAppStore((s) => s.spaces.find((sp) => sp.id === s.activeSpaceId));
+  const hasSubreddits = (activeSpace?.subreddits.length ?? 0) > 0;
 
   return (
     <Button
       onClick={generateReport}
       loading={isGenerating}
-      disabled={!hasEnabled}
+      disabled={!hasSubreddits}
       size="lg"
       className="gap-2"
-      title={hasEnabled ? undefined : 'Enable at least one subreddit in Settings'}
+      title={hasSubreddits ? undefined : 'Configure subreddits for this space in Settings'}
     >
       <FileText className="h-4 w-4" />
       {isGenerating ? 'Analyzing...' : 'Generate Report'}

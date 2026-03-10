@@ -1,54 +1,54 @@
 import { useAppStore } from '@shared/lib/store';
-import type { SubredditConfig } from '@shared/lib/types';
+import type { Space } from '@shared/lib/types';
 import { Badge, Button } from '@shared/ui';
 import { Plus, X } from 'lucide-react';
 import { useState } from 'react';
 
-const SUGGESTED_SUBREDDITS: SubredditConfig[] = [
-  { name: 'lonely', enabled: true, category: 'loneliness' },
-  { name: 'depression', enabled: true, category: 'mental health' },
-  { name: 'socialskills', enabled: true, category: 'communication' },
-  { name: 'socialanxiety', enabled: false, category: 'communication' },
-  { name: 'mentalhealth', enabled: false, category: 'mental health' },
-  { name: 'relationships', enabled: false, category: 'relationships' },
-  { name: 'selfimprovement', enabled: false, category: 'growth' },
+const SUGGESTED_SUBREDDITS = [
+  { name: 'lonely', category: 'loneliness' },
+  { name: 'depression', category: 'mental health' },
+  { name: 'socialskills', category: 'communication' },
+  { name: 'socialanxiety', category: 'communication' },
+  { name: 'mentalhealth', category: 'mental health' },
+  { name: 'relationships', category: 'relationships' },
+  { name: 'selfimprovement', category: 'growth' },
+  { name: 'astrology', category: 'cosmic' },
+  { name: 'tarot', category: 'cosmic' },
+  { name: 'aging', category: 'wellness' },
+  { name: 'companionship', category: 'connection' },
 ];
 
 export function SubredditPicker() {
-  const subreddits = useAppStore((s) => s.subreddits);
-  const setSubreddits = useAppStore((s) => s.setSubreddits);
+  const activeSpace = useAppStore((s) => s.spaces.find((sp) => sp.id === s.activeSpaceId));
+  const updateSpaceSettings = useAppStore((s) => s.updateSpaceSettings);
   const [customInput, setCustomInput] = useState('');
 
-  const toggleSubreddit = (name: string) => {
-    const existing = subreddits.find((s) => s.name === name);
-    if (existing) {
-      setSubreddits(subreddits.map((s) => (s.name === name ? { ...s, enabled: !s.enabled } : s)));
-    } else {
-      const suggested = SUGGESTED_SUBREDDITS.find((s) => s.name === name);
-      setSubreddits([
-        ...subreddits,
-        { ...(suggested ?? { name, category: 'custom' }), enabled: true },
-      ]);
-    }
-  };
+  const subreddits = activeSpace?.subreddits ?? [];
 
-  const removeSubreddit = (name: string) => {
-    setSubreddits(subreddits.filter((s) => s.name !== name));
+  const updateSubs = (newSubs: string[]) => {
+    updateSpaceSettings({ subreddits: newSubs } as Partial<Space>);
   };
 
   const sanitizeName = (raw: string) =>
     raw.trim().toLowerCase().replace(/^r\//, '').replace(/\/+$/, '');
 
-  const addCustom = () => {
-    const name = sanitizeName(customInput);
-    if (name && !subreddits.some((s) => s.name === name)) {
-      setSubreddits([...subreddits, { name, enabled: true, category: 'custom' }]);
-      setCustomInput('');
+  const addSubreddit = (name: string) => {
+    const clean = sanitizeName(name);
+    if (clean && !subreddits.includes(clean)) {
+      updateSubs([...subreddits, clean]);
     }
   };
 
-  const allNames = new Set(subreddits.map((s) => s.name));
-  const suggestionsToShow = SUGGESTED_SUBREDDITS.filter((s) => !allNames.has(s.name));
+  const removeSubreddit = (name: string) => {
+    updateSubs(subreddits.filter((s) => s !== name));
+  };
+
+  const addCustom = () => {
+    addSubreddit(customInput);
+    setCustomInput('');
+  };
+
+  const suggestionsToShow = SUGGESTED_SUBREDDITS.filter((s) => !subreddits.includes(s.name));
 
   return (
     <div className="space-y-4">
@@ -62,27 +62,21 @@ export function SubredditPicker() {
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">
-            {subreddits.map((sub) => (
-              <button
-                key={sub.name}
-                type="button"
-                onClick={() => toggleSubreddit(sub.name)}
-                className="group flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-sm transition-colors hover:border-primary/50 cursor-pointer"
+            {subreddits.map((name) => (
+              <div
+                key={name}
+                className="group flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-sm"
               >
-                <span
-                  className={`h-2 w-2 rounded-full ${sub.enabled ? 'bg-trend-up' : 'bg-muted-foreground'}`}
-                />
-                <span className={sub.enabled ? 'text-foreground' : 'text-muted-foreground'}>
-                  r/{sub.name}
-                </span>
-                <X
-                  className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeSubreddit(sub.name);
-                  }}
-                />
-              </button>
+                <span className="h-2 w-2 rounded-full bg-trend-up" />
+                <span className="text-foreground">r/{name}</span>
+                <button
+                  type="button"
+                  className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 cursor-pointer"
+                  onClick={() => removeSubreddit(name)}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -96,7 +90,7 @@ export function SubredditPicker() {
               <button
                 key={sub.name}
                 type="button"
-                onClick={() => toggleSubreddit(sub.name)}
+                onClick={() => addSubreddit(sub.name)}
                 className="flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground cursor-pointer"
               >
                 <Plus className="h-3 w-3" />

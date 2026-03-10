@@ -1,25 +1,24 @@
-import { loadSettings, reportStorage, saveSettings } from '@shared/api';
+import { updateSpace as apiUpdateSpace, loadSpaces, reportStorage } from '@shared/api';
 import { supabase } from '@shared/api/supabase';
-import { APP_CONFIG } from '@shared/config';
-import type { Report, SubredditConfig } from '@shared/lib/types';
+import type { Space } from '@shared/lib/types';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 
 interface AppStore {
+  spaces: Space[];
+  activeSpaceId: string | null;
   reports: Report[];
   isLoading: boolean;
   isGenerating: boolean;
   error: string | null;
-  subreddits: SubredditConfig[];
-  emailRecipients: string[];
   settingsLoaded: boolean;
 
+  loadSpaces: () => Promise<void>;
+  setActiveSpace: (id: string) => void;
   loadReports: () => Promise<void>;
-  loadSettings: () => Promise<void>;
   generateReport: () => Promise<{ success: boolean; error?: string }>;
   deleteReport: (id: string) => Promise<void>;
-  setSubreddits: (subreddits: SubredditConfig[]) => void;
-  setEmailRecipients: (emails: string[]) => void;
+  updateSpaceSettings: (updates: Partial<Space>) => void;
   clearError: () => void;
 }
 
@@ -42,49 +41,60 @@ async function invokeEdgeFunction(body: Record<string, unknown>): Promise<Record
   return data;
 }
 
+function buildReportBody(activeSpaceId: string | null, spaces: Space[]): Record<string, unknown> {
+  if (!activeSpaceId) throw new Error('No space selected');
+
+  const space = spaces.find((s) => s.id === activeSpaceId);
+  if (!space) throw new Error('Space not found');
+
+  const subreddits = space.subreddits.filter(Boolean);
+  if (subreddits.length === 0) throw new Error('No subreddits configured for this space');
+
+  const body: Record<string, unknown> = { space_id: activeSpaceId, subreddits };
+  if (space.emailRecipients.length > 0) body.emailRecipients = space.emailRecipients;
+  return body;
+}
+
 export const useAppStore = create<AppStore>()(
   devtools(
     persist(
       (set, get) => ({
+        spaces: [],
+        activeSpaceId: null,
         reports: [],
         isLoading: false,
         isGenerating: false,
         error: null,
-        subreddits: APP_CONFIG.DEFAULT_SUBREDDITS.map((name) => ({
-          name,
-          enabled: true,
-          category: 'core',
-        })),
-        emailRecipients: [],
         settingsLoaded: false,
 
-        loadSettings: async () => {
+        loadSpaces: async () => {
           try {
-            const settings = await loadSettings();
-            if (settings) {
-              const subreddits = settings.subreddits.map((name) => ({
-                name,
-                enabled: true,
-                category: 'core',
-              }));
-              set({ subreddits, emailRecipients: settings.email_recipients, settingsLoaded: true });
-            } else {
-              set({ settingsLoaded: true });
-            }
+            const spaces = await loadSpaces();
+            const currentId = get().activeSpaceId;
+            const activeId = spaces.find((s) => s.id === currentId)?.id ?? spaces[0]?.id ?? null;
+            set({ spaces, activeSpaceId: activeId, settingsLoaded: true });
           } catch (err) {
-            console.error('loadSettings error:', err);
+            console.error('loadSpaces error:', err);
             set({ settingsLoaded: true });
           }
         },
 
+        setActiveSpace: (id: string) => {
+          set({ activeSpaceId: id, reports: [] });
+          get().loadReports();
+        },
+
         loadReports: async () => {
+          const spaceId = get().activeSpaceId;
+          if (!spaceId) return;
+
           const hasCache = get().reports.length > 0;
           if (!hasCache) {
             set({ isLoading: true });
           }
           set({ error: null });
           try {
-            const reports = await reportStorage.getAll();
+            const reports = await reportStorage.getAll(spaceId);
             set({ reports });
           } catch (err) {
             set({ error: 'Failed to load reports from Supabase' });
@@ -97,24 +107,15 @@ export const useAppStore = create<AppStore>()(
         generateReport: async () => {
           set({ isGenerating: true, error: null });
           try {
-            const { subreddits } = get();
-            const enabledSubs = subreddits.filter((s) => s.enabled).map((s) => s.name);
-            if (enabledSubs.length === 0) {
-              throw new Error('No subreddits enabled');
-            }
-
-            const { emailRecipients } = get();
-            const body: Record<string, unknown> = { subreddits: enabledSubs };
-            if (emailRecipients.length > 0) {
-              body.emailRecipients = emailRecipients;
-            }
+            const { activeSpaceId, spaces } = get();
+            const body = buildReportBody(activeSpaceId, spaces);
 
             const data = await invokeEdgeFunction(body);
             if (!data?.success) {
               throw new Error((data?.error as string) || 'Report generation failed');
             }
 
-            const reports = await reportStorage.getAll();
+            const reports = await reportStorage.getAll(activeSpaceId ?? undefined);
             set({ reports });
 
             return { success: true };
@@ -139,30 +140,36 @@ export const useAppStore = create<AppStore>()(
           }
         },
 
-        setSubreddits: (subreddits) => {
-          const sanitized = subreddits.map((s) => ({
-            ...s,
-            name: s.name.replace(/\/+$/, ''),
-          }));
-          set({ subreddits: sanitized });
-          const names = sanitized.filter((s) => s.enabled).map((s) => s.name);
-          saveSettings({ subreddits: names }).catch((err) =>
-            console.error('Failed to sync subreddits:', err)
+        updateSpaceSettings: (updates: Partial<Space>) => {
+          const { activeSpaceId, spaces } = get();
+          if (!activeSpaceId) return;
+
+          const updatedSpaces = spaces.map((s) =>
+            s.id === activeSpaceId ? { ...s, ...updates } : s
+          );
+          set({ spaces: updatedSpaces });
+
+          const dbUpdates: Partial<Space> = {};
+          if (updates.subreddits !== undefined) {
+            dbUpdates.subreddits = updates.subreddits.map((s) => s.replace(/\/+$/, ''));
+          }
+          if (updates.emailRecipients !== undefined)
+            dbUpdates.emailRecipients = updates.emailRecipients;
+          if (updates.domainPrompt !== undefined) dbUpdates.domainPrompt = updates.domainPrompt;
+          if (updates.name !== undefined) dbUpdates.name = updates.name;
+          if (updates.description !== undefined) dbUpdates.description = updates.description;
+
+          apiUpdateSpace(activeSpaceId, dbUpdates).catch((err) =>
+            console.error('Failed to sync space settings:', err)
           );
         },
-        setEmailRecipients: (emailRecipients) => {
-          set({ emailRecipients });
-          saveSettings({ email_recipients: emailRecipients }).catch((err) =>
-            console.error('Failed to sync email recipients:', err)
-          );
-        },
+
         clearError: () => set({ error: null }),
       }),
       {
         name: 'trendwatcher-store',
         partialize: (state) => ({
-          subreddits: state.subreddits,
-          emailRecipients: state.emailRecipients,
+          activeSpaceId: state.activeSpaceId,
         }),
       }
     ),

@@ -44,6 +44,32 @@ export interface RedditComment {
   author: string;
 }
 
+export interface SubredditConfig {
+  name: string;
+  enabled: boolean;
+  category: string;
+}
+
+export interface AppSettings {
+  subreddits: SubredditConfig[];
+  emailRecipients: string[];
+  aiProvider: 'openai' | 'mock';
+  openaiModel: string;
+}
+
+export interface Space {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  domainPrompt: string;
+  subreddits: string[];
+  emailRecipients: string[];
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Report {
   id: string;
   createdAt: string;
@@ -56,17 +82,5 @@ export interface Report {
   signals: Signal[];
   summary: string;
   rawPostCount: Record<string, number>;
-}
-
-export interface SubredditConfig {
-  name: string;
-  enabled: boolean;
-  category: string;
-}
-
-export interface AppSettings {
-  subreddits: SubredditConfig[];
-  emailRecipients: string[];
-  aiProvider: 'openai' | 'mock';
-  openaiModel: string;
+  spaceId?: string;
 }
