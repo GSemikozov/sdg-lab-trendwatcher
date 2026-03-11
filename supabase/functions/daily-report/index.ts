@@ -15,6 +15,7 @@ const BREVO_BASE = 'https://api.brevo.com/v3';
 const MAX_POSTS = 100;
 const PERIOD_HOURS = 48;
 const USER_AGENT = 'web:TrendWatcher:v1.0 (by /u/sdglab)';
+const REDDIT_PROXY_URL = Deno.env.get('REDDIT_PROXY_URL');
 
 interface RedditPost {
   id: string;
@@ -212,6 +213,25 @@ interface FetchResult {
 }
 
 async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
+  // If proxy is configured, delegate fetching to it (e.g. Netlify Function) to avoid IP blocking.
+  if (REDDIT_PROXY_URL) {
+    const url = `${REDDIT_PROXY_URL}?subreddits=${encodeURIComponent(subreddits.join(','))}`;
+    console.log('[reddit] Using external proxy for subreddits:', subreddits.join(', '));
+    const res = await fetch(url, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Reddit proxy error ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const data = (await res.json()) as { posts: RedditPost[]; errors?: string[] };
+    const errors = data.errors ?? [];
+    if (errors.length > 0) {
+      for (const e of errors) console.error('[reddit-proxy]', e);
+    }
+    return { posts: data.posts ?? [], errors };
+  }
+
   const results = await Promise.allSettled(
     subreddits.map((sub) => fetchSubreddit(sub, oauthToken))
   );
