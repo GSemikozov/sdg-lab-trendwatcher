@@ -55,10 +55,7 @@ interface SpaceConfig {
 
 let cachedToken: { token: string; expiresAt: number } | null = null;
 
-async function getRedditOAuthToken(
-  clientId: string,
-  clientSecret: string
-): Promise<string> {
+async function getRedditOAuthToken(clientId: string, clientSecret: string): Promise<string> {
   if (cachedToken && Date.now() < cachedToken.expiresAt) {
     return cachedToken.token;
   }
@@ -91,19 +88,13 @@ async function getRedditOAuthToken(
 // --- Reddit Fetch ---
 
 function parseRedditJson(json: Record<string, unknown>): RedditPost[] {
-  const children = (json as { data?: { children?: { data: RedditPost }[] } })
-    ?.data?.children ?? [];
+  const children = (json as { data?: { children?: { data: RedditPost }[] } })?.data?.children ?? [];
 
   const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
-  return children
-    .filter((p) => p.data.created_utc > cutoff)
-    .map((p) => p.data);
+  return children.filter((p) => p.data.created_utc > cutoff).map((p) => p.data);
 }
 
-async function fetchWithOAuth(
-  subreddit: string,
-  token: string
-): Promise<RedditPost[]> {
+async function fetchWithOAuth(subreddit: string, token: string): Promise<RedditPost[]> {
   const url = `${REDDIT_OAUTH_BASE}/r/${subreddit}/hot.json?limit=${MAX_POSTS}&raw_json=1`;
   const res = await fetch(url, {
     headers: {
@@ -131,7 +122,14 @@ function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
 
   const entries = xml.split('<entry>').slice(1);
   for (const entry of entries) {
-    const title = entry.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"') ?? '';
+    const title =
+      entry
+        .match(/<title>([\s\S]*?)<\/title>/)?.[1]
+        ?.replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"') ?? '';
     const id = entry.match(/<id>.*?\/comments\/([\w]+)/)?.[1] ?? crypto.randomUUID();
     const link = entry.match(/<link href="([^"]+)"/)?.[1] ?? '';
     const updated = entry.match(/<updated>([\s\S]*?)<\/updated>/)?.[1];
@@ -139,7 +137,11 @@ function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
 
     const textContent = content
       .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 500);
@@ -177,10 +179,7 @@ async function fetchViaRss(subreddit: string): Promise<RedditPost[]> {
   return posts;
 }
 
-async function fetchSubreddit(
-  subreddit: string,
-  oauthToken?: string
-): Promise<RedditPost[]> {
+async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<RedditPost[]> {
   if (oauthToken) {
     console.log(`[reddit] r/${subreddit}: trying OAuth`);
     try {
@@ -212,10 +211,7 @@ interface FetchResult {
   errors: string[];
 }
 
-async function fetchAllSubreddits(
-  subreddits: string[],
-  oauthToken?: string
-): Promise<FetchResult> {
+async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
   const results = await Promise.allSettled(
     subreddits.map((sub) => fetchSubreddit(sub, oauthToken))
   );
@@ -434,15 +430,23 @@ function buildEmailHtml(
   </div>
   ${conceptsSection}
   ${sections}
-  ${topPosts.length > 0 ? `
+  ${
+    topPosts.length > 0
+      ? `
   <div style="margin-bottom:24px;">
     <h2 style="color:#fafafa;font-size:16px;margin:0 0 12px;">🔗 Top Discussed Posts</h2>
-    ${topPosts.map((p) => `
+    ${topPosts
+      .map(
+        (p) => `
     <div style="border-left:3px solid #8b5cf6;padding:8px 12px;margin-bottom:8px;">
       <a href="https://www.reddit.com${p.permalink}" style="color:#c4b5fd;font-size:13px;text-decoration:none;font-weight:500;">${p.title}</a>
       <div style="font-size:11px;color:#71717a;margin-top:4px;">r/${p.subreddit}${p.score > 0 ? ` · ${p.score} pts` : ''}${p.num_comments > 0 ? ` · ${p.num_comments} comments` : ''}</div>
-    </div>`).join('')}
-  </div>` : ''}
+    </div>`
+      )
+      .join('')}
+  </div>`
+      : ''
+  }
   <div style="text-align:center;padding-top:24px;border-top:1px solid #27272a;">
     <p style="color:#52525b;font-size:12px;margin:0;">TrendWatcher · ${spaceName}</p>
   </div>
@@ -492,7 +496,14 @@ async function processSpace(
   supabaseUrl: string,
   supabaseKey: string,
   oauthToken: string | undefined
-): Promise<{ spaceId: string; spaceName: string; postsAnalyzed: number; signalsFound: number; emailSent: boolean; error?: string }> {
+): Promise<{
+  spaceId: string;
+  spaceName: string;
+  postsAnalyzed: number;
+  signalsFound: number;
+  emailSent: boolean;
+  error?: string;
+}> {
   const subreddits = space.subreddits.map((s) => s.replace(/\/+$/, '').trim()).filter(Boolean);
   const recipients = space.email_recipients;
 
@@ -502,7 +513,14 @@ async function processSpace(
 
   if (posts.length === 0) {
     console.warn(`[space:${space.name}] No posts fetched, skipping`);
-    return { spaceId: space.id, spaceName: space.name, postsAnalyzed: 0, signalsFound: 0, emailSent: false, error: 'No posts fetched' };
+    return {
+      spaceId: space.id,
+      spaceName: space.name,
+      postsAnalyzed: 0,
+      signalsFound: 0,
+      emailSent: false,
+      error: 'No posts fetched',
+    };
   }
 
   console.log(`[space:${space.name}] Running AI analysis...`);
@@ -551,7 +569,7 @@ async function processSpace(
   if (brevoKey && recipients.length > 0) {
     try {
       const topPosts = [...posts]
-        .sort((a, b) => (b.score + b.num_comments) - (a.score + a.num_comments))
+        .sort((a, b) => b.score + b.num_comments - (a.score + a.num_comments))
         .slice(0, 15);
       const html = buildEmailHtml(
         analysis.summary,
@@ -570,7 +588,13 @@ async function processSpace(
     }
   }
 
-  return { spaceId: space.id, spaceName: space.name, postsAnalyzed: posts.length, signalsFound: analysis.signals.length, emailSent };
+  return {
+    spaceId: space.id,
+    spaceName: space.name,
+    postsAnalyzed: posts.length,
+    signalsFound: analysis.signals.length,
+    emailSent,
+  };
 }
 
 // --- Handler ---
@@ -628,7 +652,8 @@ Deno.serve(async (req) => {
         const body = await req.json();
         requestSpaceId = body.space_id;
         if (body.subreddits?.length > 0) bodySubreddits = body.subreddits;
-        if (Array.isArray(body.emailRecipients) && body.emailRecipients.length > 0) bodyRecipients = body.emailRecipients;
+        if (Array.isArray(body.emailRecipients) && body.emailRecipients.length > 0)
+          bodyRecipients = body.emailRecipients;
       } catch {
         // empty body — process all spaces
       }
@@ -665,18 +690,28 @@ Deno.serve(async (req) => {
     }
 
     if (spacesToProcess.length === 0) {
-      return new Response(
-        JSON.stringify({ error: 'No spaces found to process' }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ error: 'No spaces found to process' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    console.log(`[daily-report] Processing ${spacesToProcess.length} space(s): ${spacesToProcess.map((s) => s.name).join(', ')}`);
+    console.log(
+      `[daily-report] Processing ${spacesToProcess.length} space(s): ${spacesToProcess.map((s) => s.name).join(', ')}`
+    );
 
     const results = [];
     for (const space of spacesToProcess) {
       try {
-        const result = await processSpace(space, openaiKey, brevoKey, senderEmail, supabaseUrl, supabaseKey, oauthToken);
+        const result = await processSpace(
+          space,
+          openaiKey,
+          brevoKey,
+          senderEmail,
+          supabaseUrl,
+          supabaseKey,
+          oauthToken
+        );
         results.push(result);
       } catch (err) {
         console.error(`[space:${space.name}] Fatal error:`, err);
@@ -695,7 +730,7 @@ Deno.serve(async (req) => {
     const responseBody: Record<string, unknown> = { success: hasData, spaces: results };
 
     if (!hasData && results.length > 0) {
-      responseBody.error = results[0].error ?? 'No posts fetched for any space';
+      responseBody.error = results[0].error ?? 'No posts fetched for this space';
     }
 
     return new Response(JSON.stringify(responseBody), {
