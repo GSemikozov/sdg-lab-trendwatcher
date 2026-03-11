@@ -691,10 +691,16 @@ Deno.serve(async (req) => {
       }
     }
 
-    return new Response(
-      JSON.stringify({ success: true, spaces: results }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    const hasData = results.some((r) => r.postsAnalyzed > 0);
+    const responseBody: Record<string, unknown> = { success: hasData, spaces: results };
+
+    if (!hasData && results.length > 0) {
+      responseBody.error = results[0].error ?? 'No posts fetched for any space';
+    }
+
+    return new Response(JSON.stringify(responseBody), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
   } catch (err) {
     console.error('[daily-report] Error:', err);
     return new Response(
