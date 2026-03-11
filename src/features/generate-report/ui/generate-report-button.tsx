@@ -14,7 +14,7 @@ export function GenerateReportButton() {
       loading={isGenerating}
       disabled={!hasSubreddits}
       size="lg"
-      className="gap-2"
+      className="gap-2 whitespace-nowrap"
       title={hasSubreddits ? undefined : 'Configure subreddits for this space in Settings'}
     >
       <FileText className="h-4 w-4" />
