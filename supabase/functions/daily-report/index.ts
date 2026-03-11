@@ -27,6 +27,11 @@ interface RedditPost {
   permalink: string;
 }
 
+interface AdConcept {
+  title: string;
+  description: string;
+}
+
 interface Signal {
   category: string;
   title: string;
@@ -247,6 +252,12 @@ Return JSON with this exact structure:
       "subreddits": ["which subreddits"],
       "growthPercent": estimated growth vs normal volume (null if unknown)
     }
+  ],
+  "ad_concepts": [
+    {
+      "title": "Short name of the creative concept",
+      "description": "1-3 sentences describing the creative angle for a Meta ad (visual story + message + who it speaks to)."
+    }
   ]
 }
 
@@ -256,11 +267,17 @@ Signal guidelines:
 - PAIN POINTS: specific frustrations users express repeatedly. Focus on unmet needs that a product could address. Each pain point must describe the user's actual words/sentiment, not just a label.
 - HYPOTHESES: each must link to at least one pain point or trend above. Format: "Because users report [pain], a product that [solution] could [outcome]."
 
+Creative concepts guidelines:
+- Use ONLY emerging topics, growing trends, and pain points as input (do not invent new themes).
+- Each concept should describe: (1) the core emotional hook or story, (2) the problem it targets, (3) what kind of visual creative could express it (without writing copy or designing the layout).
+- Think specifically about Meta ads (feed/reels/stories) — concepts should be implementable as static images or short videos.
+- 3-5 concepts is enough. Prioritize the most actionable and differentiated ones.
+
 Quality rules:
-- 3-5 signals per category, prioritized by strength
-- Every signal must be grounded in specific posts — don't invent patterns
-- Prefer concrete ("users ask for AI chat companions at 2-3am") over vague ("loneliness is discussed")
-- Strength = high means 10+ posts with strong engagement, medium = 3-9 posts, low = emerging pattern in 1-2 posts`;
+- 3-5 signals per category, prioritized by strength.
+- Every signal and every ad concept must be grounded in specific posts — don't invent patterns.
+- Prefer concrete ("late-night companion chat for people awake at 2-3am") over vague ("loneliness is discussed").
+- Strength = high means 10+ posts with strong engagement, medium = 3-9 posts, low = emerging pattern in 1-2 posts.`;
 
 function buildSystemPrompt(domainPrompt: string): string {
   if (domainPrompt.trim()) {
@@ -274,7 +291,7 @@ async function analyzeWithOpenAI(
   subreddits: string[],
   apiKey: string,
   domainPrompt: string
-): Promise<{ summary: string; signals: Signal[] }> {
+): Promise<{ summary: string; signals: Signal[]; ad_concepts?: AdConcept[] }> {
   const postsText = posts
     .slice(0, 200)
     .map(
@@ -318,6 +335,7 @@ async function analyzeWithOpenAI(
 function buildEmailHtml(
   summary: string,
   signals: Signal[],
+  adConcepts: AdConcept[],
   totalPosts: number,
   subreddits: string[],
   topPosts: RedditPost[],
@@ -380,6 +398,27 @@ function buildEmailHtml(
     })
     .join('');
 
+  const conceptsSection =
+    adConcepts.length === 0
+      ? ''
+      : `
+  <div style="margin-bottom:24px;">
+    <h2 style="color:#fafafa;font-size:16px;margin:0 0 12px;">🎯 Creative Concepts for Meta Ads</h2>
+    <p style="color:#71717a;font-size:13px;margin:0 0 12px;">
+      High-level directions for ad creatives, synthesized from emerging topics, growing trends, and pain points.
+    </p>
+    ${adConcepts
+      .slice(0, 5)
+      .map(
+        (c) => `
+    <div style="background:#18181b;border:1px solid #27272a;border-radius:8px;padding:14px;margin-bottom:10px;">
+      <div style="font-weight:600;color:#fafafa;margin-bottom:4px;">${c.title}</div>
+      <p style="color:#a1a1aa;font-size:13px;line-height:1.5;margin:0;">${c.description}</p>
+    </div>`
+      )
+      .join('')}
+  </div>`;
+
   return `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;padding:0;background:#09090b;font-family:-apple-system,system-ui,sans-serif;">
 <div style="max-width:640px;margin:0 auto;padding:32px 20px;">
@@ -393,6 +432,7 @@ function buildEmailHtml(
     <p style="color:#a1a1aa;font-size:14px;line-height:1.6;margin:0;">${summary}</p>
     <p style="color:#52525b;font-size:12px;margin:12px 0 0;">${totalPosts} posts from ${subreddits.map((s) => `r/${s}`).join(', ')}</p>
   </div>
+  ${conceptsSection}
   ${sections}
   ${topPosts.length > 0 ? `
   <div style="margin-bottom:24px;">
@@ -484,6 +524,7 @@ async function processSpace(
     total_posts_analyzed: posts.length,
     summary: analysis.summary,
     signals: analysis.signals,
+    ad_concepts: analysis.ad_concepts ?? [],
     raw_post_count: rawPostCount,
     space_id: space.id,
   };
@@ -512,7 +553,15 @@ async function processSpace(
       const topPosts = [...posts]
         .sort((a, b) => (b.score + b.num_comments) - (a.score + a.num_comments))
         .slice(0, 15);
-      const html = buildEmailHtml(analysis.summary, analysis.signals, posts.length, subreddits, topPosts, space.name);
+      const html = buildEmailHtml(
+        analysis.summary,
+        analysis.signals,
+        analysis.ad_concepts ?? [],
+        posts.length,
+        subreddits,
+        topPosts,
+        space.name
+      );
       await sendEmail(html, recipients, brevoKey, senderEmail, space.name);
       emailSent = true;
       console.log(`[space:${space.name}] Email sent to: ${recipients.join(', ')}`);

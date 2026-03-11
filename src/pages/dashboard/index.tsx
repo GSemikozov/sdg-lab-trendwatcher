@@ -2,6 +2,7 @@ import { GenerateReportButton } from '@features/generate-report';
 import { compareReports } from '@shared/lib/report-diff';
 import { useAppStore } from '@shared/lib/store';
 import { Skeleton } from '@shared/ui';
+import { AdConceptsSection } from '@widgets/ad-concepts';
 import { ReportCard } from '@widgets/report-card';
 import { ReportDiff } from '@widgets/report-diff';
 import { SignalList } from '@widgets/signal-list';
@@ -145,6 +146,7 @@ export function SpaceDashboardPage() {
             {selectedReport ? (
               <>
                 <TrendBoard report={selectedReport} />
+                <AdConceptsSection concepts={selectedReport.adConcepts} />
                 {comparison && <ReportDiff comparison={comparison} />}
                 <div>
                   <h2 className="mb-3 text-lg font-semibold text-foreground">All Signals</h2>

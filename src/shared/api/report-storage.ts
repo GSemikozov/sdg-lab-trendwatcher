@@ -1,4 +1,4 @@
-import type { Report, Signal } from '@shared/lib/types';
+import type { AdConcept, Report, Signal } from '@shared/lib/types';
 import { supabase } from './supabase';
 
 export interface ReportStorage {
@@ -18,6 +18,7 @@ interface ReportRow {
   total_posts_analyzed: number;
   summary: string;
   signals: Signal[];
+  ad_concepts?: AdConcept[];
   raw_post_count: Record<string, number>;
   space_id?: string;
 }
@@ -31,6 +32,7 @@ function rowToReport(row: ReportRow): Report {
     totalPostsAnalyzed: row.total_posts_analyzed,
     summary: row.summary,
     signals: row.signals,
+    adConcepts: row.ad_concepts,
     rawPostCount: row.raw_post_count,
     spaceId: row.space_id,
   };
@@ -46,6 +48,7 @@ function reportToRow(report: Report) {
     total_posts_analyzed: report.totalPostsAnalyzed,
     summary: report.summary,
     signals: report.signals,
+    ad_concepts: report.adConcepts,
     raw_post_count: report.rawPostCount,
     space_id: report.spaceId,
   };

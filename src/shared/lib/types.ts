@@ -26,6 +26,11 @@ export interface RedditPostSummary {
   permalink: string;
 }
 
+export interface AdConcept {
+  title: string;
+  description: string;
+}
+
 export interface RedditPost {
   id: string;
   title: string;
@@ -80,6 +85,7 @@ export interface Report {
   subreddits: string[];
   totalPostsAnalyzed: number;
   signals: Signal[];
+  adConcepts?: AdConcept[];
   summary: string;
   rawPostCount: Record<string, number>;
   spaceId?: string;
