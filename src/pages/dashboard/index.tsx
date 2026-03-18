@@ -162,7 +162,7 @@ export function SpaceDashboardPage() {
           >
             <Settings className="h-4 w-4" />
           </Link>
-          <GenerateReportButton />
+          {filter === 'daily' && <GenerateReportButton />}
         </div>
       </div>
 
@@ -200,6 +200,8 @@ export function SpaceDashboardPage() {
           spaceName={space.name}
           onSelectReport={setSelectedReportId}
           onDeleteReport={deleteReport}
+          isFirst
+          showGenerateButton={filter === 'daily'}
         />
       )}
 
@@ -275,6 +277,8 @@ function DailySection({
   spaceName,
   onSelectReport,
   onDeleteReport,
+  isFirst = false,
+  showGenerateButton,
 }: {
   reports: Report[];
   isLoading: boolean;
@@ -285,6 +289,8 @@ function DailySection({
   spaceName: string;
   onSelectReport: (id: string) => void;
   onDeleteReport: (id: string) => Promise<void>;
+  isFirst?: boolean;
+  showGenerateButton: boolean;
 }) {
   const generateReport = useAppStore((s) => s.generateReport);
 
@@ -303,49 +309,60 @@ function DailySection({
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
-      <aside className="space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-medium text-muted-foreground">Daily Reports</h2>
+    <section className={isFirst ? '' : 'mt-10 border-t border-border pt-8'}>
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="h-5 w-5 text-primary" />
+          <h2 className="text-lg font-semibold text-foreground">Daily Reports</h2>
+        </div>
+        {showGenerateButton && (
           <button
             type="button"
             onClick={generateReport}
             disabled={isGenerating}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 cursor-pointer whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 cursor-pointer whitespace-nowrap"
           >
             {isGenerating && <Loader2 className="h-3 w-3 animate-spin" />}
             {isGenerating ? 'Generating…' : 'Generate daily'}
           </button>
-        </div>
-        {reports.map((report) => (
-          <ReportCard
-            key={report.id}
-            report={report}
-            isActive={report.id === selectedReportId}
-            onSelect={onSelectReport}
-            onDelete={onDeleteReport}
-          />
-        ))}
-      </aside>
-
-      <div className="space-y-6">
-        {selectedReport ? (
-          <>
-            <TrendBoard report={selectedReport} />
-            <AdConceptsSection concepts={selectedReport.adConcepts} />
-            {comparison && <ReportDiff comparison={comparison} />}
-            <div>
-              <h2 className="mb-3 text-lg font-semibold text-foreground">All Signals</h2>
-              <SignalList signals={selectedReport.signals} />
-            </div>
-          </>
-        ) : (
-          <p className="py-12 text-center text-muted-foreground">
-            Select a report to view details
-          </p>
         )}
       </div>
-    </div>
+
+      <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
+        <aside className="space-y-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            History
+          </h3>
+          {reports.map((report) => (
+            <ReportCard
+              key={report.id}
+              report={report}
+              isActive={report.id === selectedReportId}
+              onSelect={onSelectReport}
+              onDelete={onDeleteReport}
+            />
+          ))}
+        </aside>
+
+        <div className="space-y-6">
+          {selectedReport ? (
+            <>
+              <TrendBoard report={selectedReport} />
+              <AdConceptsSection concepts={selectedReport.adConcepts} />
+              {comparison && <ReportDiff comparison={comparison} />}
+              <div>
+                <h2 className="mb-3 text-lg font-semibold text-foreground">All Signals</h2>
+                <SignalList signals={selectedReport.signals} />
+              </div>
+            </>
+          ) : (
+            <p className="py-12 text-center text-muted-foreground">
+              Select a report to view details
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
