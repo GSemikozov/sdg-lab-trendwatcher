@@ -2,7 +2,7 @@ import { GenerateReportButton } from '@features/generate-report';
 import { generateAggregateReport, loadAggregateReports } from '@shared/api';
 import { compareReports } from '@shared/lib/report-diff';
 import { useAppStore } from '@shared/lib/store';
-import type { AggregateReport, PeriodType } from '@shared/lib/types';
+import type { AggregateReport, PeriodType, Report } from '@shared/lib/types';
 import { Skeleton } from '@shared/ui';
 import { AdConceptsSection } from '@widgets/ad-concepts';
 import { AggregateReportView } from '@widgets/aggregate-report';
@@ -11,6 +11,7 @@ import { ReportDiff } from '@widgets/report-diff';
 import { SignalList } from '@widgets/signal-list';
 import { TrendBoard } from '@widgets/trend-board';
 import { BarChart3, CalendarDays, CalendarRange, Layers, Loader2, Settings } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 
@@ -275,11 +276,11 @@ function DailySection({
   onSelectReport,
   onDeleteReport,
 }: {
-  reports: ReturnType<typeof useAppStore>['reports'];
+  reports: Report[];
   isLoading: boolean;
   isGenerating: boolean;
   selectedReportId: string | null;
-  selectedReport: ReturnType<typeof useAppStore>['reports'][number] | null;
+  selectedReport: Report | null;
   comparison: ReturnType<typeof compareReports> | null;
   spaceName: string;
   onSelectReport: (id: string) => void;
@@ -346,7 +347,7 @@ function AggregateSection({
   isFirst = false,
 }: {
   title: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   reports: AggregateReport[];
   isLoading: boolean;
   isGenerating: boolean;
