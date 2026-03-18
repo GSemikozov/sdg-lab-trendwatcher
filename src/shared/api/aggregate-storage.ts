@@ -1,4 +1,4 @@
-import type { AdConcept, AggregateReport, ClusterSummary, PeriodType } from '@shared/lib/types';
+import type { AdConcept, AggregateReport, ClusterSummary, PeriodType, Signal } from '@shared/lib/types';
 import { supabase } from './supabase';
 
 interface AggregateRow {
@@ -12,6 +12,9 @@ interface AggregateRow {
   cluster_summaries: ClusterSummary[];
   total_posts: number;
   created_at: string;
+  growing_trends?: Signal[];
+  pain_points?: Signal[];
+  product_hypotheses?: Signal[];
 }
 
 function rowToAggregate(row: AggregateRow): AggregateReport {
@@ -22,6 +25,9 @@ function rowToAggregate(row: AggregateRow): AggregateReport {
     periodStart: row.period_start,
     periodEnd: row.period_end,
     summary: row.summary,
+    growingTrends: row.growing_trends ?? [],
+    painPoints: row.pain_points ?? [],
+    productHypotheses: row.product_hypotheses ?? [],
     creativeConcepts: row.creative_concepts ?? [],
     clusterSummaries: row.cluster_summaries ?? [],
     totalPosts: row.total_posts,

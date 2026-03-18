@@ -108,6 +108,9 @@ export interface AggregateReport {
   periodStart: string;
   periodEnd: string;
   summary: string;
+  growingTrends: Signal[];
+  painPoints: Signal[];
+  productHypotheses: Signal[];
   creativeConcepts: AdConcept[];
   clusterSummaries: ClusterSummary[];
   totalPosts: number;

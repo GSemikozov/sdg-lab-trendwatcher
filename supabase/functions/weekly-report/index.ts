@@ -44,6 +44,17 @@ interface AdConcept {
   description: string;
 }
 
+interface WeeklySignal {
+  category: string;
+  title: string;
+  description: string;
+  strength: string;
+  sentiment: string;
+  postCount: number;
+  subreddits: string[];
+  growthPercent?: number;
+}
+
 interface ClusterSummary {
   index: number;
   label: string;
@@ -108,7 +119,43 @@ function buildWeeklyPrompt(domainPrompt: string, periodType: string): string {
 
 Return JSON with this exact structure:
 {
-  "summary": "3-5 sentence executive summary of the ${periodType}. Focus on: what themes dominated, what's new compared to the previous ${periodType}, what's growing or fading. Be specific — name trends, not vague observations.",
+  "summary": "3-5 sentence executive summary for this ${periodType}. Focus on: what themes dominated, what is new, and what changed vs the previous ${periodType}. Do NOT repeat all bullets below — highlight only the most important insights.",
+  "growing_trends": [
+    {
+      "category": "growing_trend",
+      "title": "Short descriptive title (5-8 words)",
+      "description": "What is growing and why it matters for product/marketing decisions. Reference specific cluster(s) and post patterns.",
+      "strength": "high" | "medium" | "low",
+      "sentiment": "positive" | "negative" | "mixed" | "neutral",
+      "postCount": number of posts supporting this trend,
+      "subreddits": ["which subreddits"],
+      "growthPercent": estimated growth vs normal volume (null if unknown)
+    }
+  ],
+  "pain_points": [
+    {
+      "category": "pain_point",
+      "title": "Short descriptive title (5-8 words)",
+      "description": "The concrete recurring frustration or unmet need users describe, in their own language where possible. Explain why it matters.",
+      "strength": "high" | "medium" | "low",
+      "sentiment": "positive" | "negative" | "mixed" | "neutral",
+      "postCount": number of posts supporting this pain point,
+      "subreddits": ["which subreddits"],
+      "growthPercent": estimated growth vs normal volume (null if unknown)
+    }
+  ],
+  "product_hypotheses": [
+    {
+      "category": "hypothesis",
+      "title": "Short name of the hypothesis (5-8 words)",
+      "description": "Concrete product/feature/experiment idea explicitly linked to at least one growing trend or pain point above. Format: 'Because users report [pain/trend], a product that [solution] could [outcome].'",
+      "strength": "high" | "medium" | "low",
+      "sentiment": "positive" | "negative" | "mixed" | "neutral",
+      "postCount": number of posts this hypothesis is grounded in,
+      "subreddits": ["which subreddits"],
+      "growthPercent": estimated growth vs normal volume (null if unknown)
+    }
+  ],
   "cluster_summaries": [
     {
       "index": 0,
@@ -127,10 +174,12 @@ Return JSON with this exact structure:
 }
 
 Guidelines:
-- Summary should highlight what CHANGED this ${periodType} vs last. If no previous data, focus on what's strongest.
+- Summary should highlight what CHANGED this ${periodType} vs last, but keep it high-level. Detailed GROWING TRENDS, PAIN POINTS and PRODUCT HYPOTHESES must live in the dedicated arrays above.
 - Cluster summaries: label each cluster with a human-readable theme name. Estimate change vs previous ${periodType}.
 - Creative concepts: 3-5 concepts, each linked to specific clusters. Think Meta ads (feed/reels/stories). Prioritize the most actionable and differentiated.
-- Be concrete. "Late-night loneliness peaks on Sundays" > "People feel lonely sometimes."`;
+- Be concrete. "Late-night loneliness peaks on Sundays" > "People feel lonely sometimes."
+- When writing PAIN POINTS and PRODUCT HYPOTHESES, stay close to the language users actually use in the example posts and comments.
+- 3-7 items in each of growing_trends, pain_points, product_hypotheses is enough; prioritize by impact and clarity.`;
 
   if (domainPrompt.trim()) {
     return `${domainPrompt.trim()}\n\n${base}`;
@@ -145,7 +194,14 @@ async function analyzeWithOpenAI(
   periodType: string,
   periodLabel: string,
   openaiKey: string,
-): Promise<{ summary: string; cluster_summaries: ClusterSummary[]; creative_concepts: AdConcept[] }> {
+): Promise<{
+  summary: string;
+  growing_trends?: WeeklySignal[];
+  pain_points?: WeeklySignal[];
+  product_hypotheses?: WeeklySignal[];
+  cluster_summaries: ClusterSummary[];
+  creative_concepts: AdConcept[];
+}> {
   const clusterText = clusters
     .map((c) => {
       const postsText = c.posts
@@ -192,6 +248,9 @@ async function analyzeWithOpenAI(
 
 function buildEmailHtml(
   summary: string,
+  growingTrends: WeeklySignal[],
+  painPoints: WeeklySignal[],
+  productHypotheses: WeeklySignal[],
   clusterSummaries: ClusterSummary[],
   concepts: AdConcept[],
   periodType: string,
@@ -201,6 +260,44 @@ function buildEmailHtml(
 ): string {
   const periodLabel = periodType === 'week' ? 'Weekly' : 'Monthly';
   const dateRange = `${periodStart} — ${periodEnd}`;
+
+  const strengthColor: Record<string, string> = {
+    high: '#ef4444',
+    medium: '#f59e0b',
+    low: '#22c55e',
+  };
+
+  function renderSignalSection(
+    title: string,
+    emoji: string,
+    signals: WeeklySignal[],
+  ): string {
+    if (!signals || signals.length === 0) return '';
+
+    const items = signals
+      .map(
+        (s) => `
+    <div style="background:#18181b;border:1px solid #27272a;border-radius:8px;padding:16px;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="font-weight:600;color:#fafafa;">${s.title}</span>
+        <span style="background:${strengthColor[s.strength] ?? '#71717a'}22;color:${strengthColor[s.strength] ?? '#71717a'};padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">${s.strength}</span>
+      </div>
+      <p style="color:#a1a1aa;font-size:13px;line-height:1.5;margin:0 0 8px;">${s.description}</p>
+      <div style="font-size:12px;color:#71717a;">
+        ${s.growthPercent ? `<span style="color:#22c55e;font-weight:600;">+${s.growthPercent}%</span> · ` : ''}${s.postCount > 0 ? `${s.postCount} posts · ` : ''}${s.sentiment} · ${s.subreddits
+          .map((r) => `r/${r}`)
+          .join(', ')}
+      </div>
+    </div>`,
+      )
+      .join('');
+
+    return `
+  <div style="margin-bottom:24px;">
+    <h2 style="color:#fafafa;font-size:16px;margin:0 0 12px;">${emoji} ${title}</h2>
+    ${items}
+  </div>`;
+  }
 
   const clusterCards = clusterSummaries
     .map(
@@ -239,6 +336,10 @@ function buildEmailHtml(
     <h2 style="color:#fafafa;font-size:16px;margin:0 0 8px;">${periodLabel} Summary</h2>
     <p style="color:#a1a1aa;font-size:14px;line-height:1.6;margin:0;">${summary}</p>
   </div>
+
+  ${renderSignalSection('GROWING TRENDS', '📈', growingTrends)}
+  ${renderSignalSection('PAIN POINTS', '😰', painPoints)}
+  ${renderSignalSection('PRODUCT HYPOTHESES', '💡', productHypotheses)}
 
   ${
     conceptCards
@@ -431,6 +532,9 @@ async function processSpace(
     period_start: periodStart,
     period_end: periodEnd,
     summary: analysis.summary,
+    growing_trends: analysis.growing_trends ?? [],
+    pain_points: analysis.pain_points ?? [],
+    product_hypotheses: analysis.product_hypotheses ?? [],
     creative_concepts: analysis.creative_concepts ?? [],
     cluster_summaries: analysis.cluster_summaries ?? [],
     total_posts: totalPosts,
@@ -462,6 +566,9 @@ async function processSpace(
     try {
       const html = buildEmailHtml(
         analysis.summary,
+        analysis.growing_trends ?? [],
+        analysis.pain_points ?? [],
+        analysis.product_hypotheses ?? [],
         analysis.cluster_summaries ?? [],
         analysis.creative_concepts ?? [],
         periodType,

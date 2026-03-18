@@ -1,7 +1,8 @@
-import type { AggregateReport } from '@shared/lib/types';
+import type { AggregateReport, Signal } from '@shared/lib/types';
+import { SignalCard } from '@entities/signal';
 import { AdConceptsSection } from '@widgets/ad-concepts';
 import { Card, CardContent, CardHeader, CardTitle } from '@shared/ui';
-import { Layers, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { AlertTriangle, Layers, Lightbulb, Minus, TrendingDown, TrendingUp } from 'lucide-react';
 
 interface AggregateReportViewProps {
   report: AggregateReport;
@@ -29,6 +30,26 @@ export function AggregateReportView({ report }: AggregateReportViewProps) {
         </CardContent>
       </Card>
 
+      {/* Growing trends / pain points / hypotheses, mirroring daily TrendBoard */}
+      <SignalSection
+        title="Growing Trends"
+        description="Topics accelerating compared to the baseline this period"
+        icon="growing"
+        signals={report.growingTrends}
+      />
+      <SignalSection
+        title="Pain Points"
+        description="Most acute or recurring frustrations and unmet needs users express"
+        icon="pain"
+        signals={report.painPoints}
+      />
+      <SignalSection
+        title="Product Hypotheses"
+        description="Concrete product ideas and experiments grounded in this week's signals"
+        icon="hypothesis"
+        signals={report.productHypotheses}
+      />
+
       <AdConceptsSection concepts={report.creativeConcepts} />
 
       {report.clusterSummaries.length > 0 && (
@@ -54,6 +75,44 @@ export function AggregateReportView({ report }: AggregateReportViewProps) {
         </Card>
       )}
     </div>
+  );
+}
+
+function SignalSection({
+  title,
+  description,
+  icon,
+  signals,
+}: {
+  title: string;
+  description: string;
+  icon: 'growing' | 'pain' | 'hypothesis';
+  signals: Signal[];
+}) {
+  if (!signals || signals.length === 0) return null;
+
+  const IconComponent =
+    icon === 'growing' ? TrendingUp : icon === 'pain' ? AlertTriangle : Lightbulb;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <IconComponent className="h-5 w-5 text-muted-foreground" />
+          <div>
+            <CardTitle>{title}</CardTitle>
+            <p className="text-xs text-muted-foreground">{description}</p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {signals.map((signal) => (
+            <SignalCard key={signal.id} signal={signal} />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
