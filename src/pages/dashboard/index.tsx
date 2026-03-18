@@ -286,6 +286,8 @@ function DailySection({
   onSelectReport: (id: string) => void;
   onDeleteReport: (id: string) => Promise<void>;
 }) {
+  const generateReport = useAppStore((s) => s.generateReport);
+
   if (isLoading && !isGenerating) {
     return (
       <div className="space-y-4">
@@ -303,7 +305,18 @@ function DailySection({
   return (
     <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
       <aside className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">Daily Reports</h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-medium text-muted-foreground">Daily Reports</h2>
+          <button
+            type="button"
+            onClick={generateReport}
+            disabled={isGenerating}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 cursor-pointer whitespace-nowrap"
+          >
+            {isGenerating && <Loader2 className="h-3 w-3 animate-spin" />}
+            {isGenerating ? 'Generating…' : 'Generate daily'}
+          </button>
+        </div>
         {reports.map((report) => (
           <ReportCard
             key={report.id}

@@ -18,7 +18,7 @@ export function GenerateReportButton() {
       title={hasSubreddits ? undefined : 'Configure subreddits for this space in Settings'}
     >
       <FileText className="h-4 w-4" />
-      {isGenerating ? 'Analyzing...' : 'Generate Report'}
+      {isGenerating ? 'Analyzing...' : 'Generate daily report'}
     </Button>
   );
 }
