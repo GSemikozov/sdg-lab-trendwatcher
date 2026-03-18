@@ -212,6 +212,18 @@ interface FetchResult {
   errors: string[];
 }
 
+// --- Embeddings ---
+
+interface PostEmbeddingPayload {
+  space_id: string;
+  source: string;
+  subreddit: string;
+  post_id: string;
+  posted_at: string;
+  content: string;
+  embedding: number[];
+}
+
 async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
   // If proxy is configured, delegate fetching to it (e.g. Netlify Function) to avoid IP blocking.
   if (REDDIT_PROXY_URL) {
@@ -248,6 +260,84 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
 
   const posts = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
   return { posts, errors };
+}
+
+async function upsertPostEmbeddings(
+  spaceId: string,
+  posts: RedditPost[],
+  openaiKey: string,
+  supabaseUrl: string,
+  supabaseKey: string
+): Promise<void> {
+  if (posts.length === 0) return;
+
+  // Prepare inputs for embeddings: title + truncated selftext
+  const inputs = posts.map((p) => {
+    const body = p.selftext ? p.selftext.slice(0, 400) : '';
+    return `[r/${p.subreddit}] ${p.title}\n\n${body}`;
+  });
+
+  const res = await fetch(`${OPENAI_BASE}/embeddings`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${openaiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'text-embedding-3-small',
+      input: inputs,
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.error('[embeddings] OpenAI error', res.status, errText.slice(0, 200));
+    return; // Non-blocking: do not break daily reports
+  }
+
+  const data = await res.json();
+  const embeddings: number[][] = data.data?.map((d: { embedding: number[] }) => d.embedding) ?? [];
+  if (embeddings.length !== posts.length) {
+    console.error(
+      '[embeddings] Mismatch between posts and embeddings',
+      posts.length,
+      embeddings.length
+    );
+  }
+
+  const payload: PostEmbeddingPayload[] = posts.map((p, idx) => ({
+    space_id: spaceId,
+    source: 'reddit',
+    subreddit: p.subreddit,
+    post_id: p.id,
+    posted_at: new Date(p.created_utc * 1000).toISOString(),
+    content: `${p.title}\n\n${p.selftext?.slice(0, 400) ?? ''}`,
+    embedding: embeddings[idx] ?? [],
+  }));
+
+  try {
+    const dbRes = await fetch(`${supabaseUrl}/rest/v1/post_embeddings?on_conflict=space_id,post_id`, {
+      method: 'POST',
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=ignore-duplicates',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!dbRes.ok) {
+      const body = await dbRes.text().catch(() => '');
+      console.error('[embeddings] Failed to upsert post_embeddings:', dbRes.status, body.slice(0, 200));
+    } else {
+      console.log(
+        `[embeddings] Upserted ${payload.length} embeddings for space ${spaceId}`
+      );
+    }
+  } catch (err) {
+    console.error('[embeddings] Error while upserting embeddings:', err);
+  }
 }
 
 // --- OpenAI ---
@@ -542,6 +632,11 @@ async function processSpace(
       error: 'No posts fetched',
     };
   }
+
+  // Fire-and-forget embeddings storage; do not block or fail daily report
+  upsertPostEmbeddings(space.id, posts, openaiKey, supabaseUrl, supabaseKey).catch((err) => {
+    console.error(`[space:${space.name}] Embeddings failed (non-blocking):`, err);
+  });
 
   console.log(`[space:${space.name}] Running AI analysis...`);
   const analysis = await analyzeWithOpenAI(posts, subreddits, openaiKey, space.domain_prompt);

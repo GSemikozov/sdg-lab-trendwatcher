@@ -90,3 +90,26 @@ export interface Report {
   rawPostCount: Record<string, number>;
   spaceId?: string;
 }
+
+export interface ClusterSummary {
+  index: number;
+  label: string;
+  size: number;
+  change: string;
+  description: string;
+}
+
+export type PeriodType = 'week' | 'month';
+
+export interface AggregateReport {
+  id: string;
+  spaceId: string;
+  periodType: PeriodType;
+  periodStart: string;
+  periodEnd: string;
+  summary: string;
+  creativeConcepts: AdConcept[];
+  clusterSummaries: ClusterSummary[];
+  totalPosts: number;
+  createdAt: string;
+}

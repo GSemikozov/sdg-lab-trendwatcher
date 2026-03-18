@@ -1,0 +1,63 @@
+import type { AdConcept, AggregateReport, ClusterSummary, PeriodType } from '@shared/lib/types';
+import { supabase } from './supabase';
+
+interface AggregateRow {
+  id: string;
+  space_id: string;
+  period_type: PeriodType;
+  period_start: string;
+  period_end: string;
+  summary: string;
+  creative_concepts: AdConcept[];
+  cluster_summaries: ClusterSummary[];
+  total_posts: number;
+  created_at: string;
+}
+
+function rowToAggregate(row: AggregateRow): AggregateReport {
+  return {
+    id: row.id,
+    spaceId: row.space_id,
+    periodType: row.period_type,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    summary: row.summary,
+    creativeConcepts: row.creative_concepts ?? [],
+    clusterSummaries: row.cluster_summaries ?? [],
+    totalPosts: row.total_posts,
+    createdAt: row.created_at,
+  };
+}
+
+export async function loadAggregateReports(
+  spaceId: string,
+  periodType: PeriodType,
+): Promise<AggregateReport[]> {
+  const { data, error } = await supabase
+    .from('aggregate_reports')
+    .select('*')
+    .eq('space_id', spaceId)
+    .eq('period_type', periodType)
+    .order('period_start', { ascending: false })
+    .limit(12);
+
+  if (error) throw new Error(`Failed to load aggregate reports: ${error.message}`);
+  return (data as AggregateRow[]).map(rowToAggregate);
+}
+
+export async function generateAggregateReport(
+  spaceId: string,
+  periodType: PeriodType,
+): Promise<{ success: boolean; error?: string }> {
+  const { data, error } = await supabase.functions.invoke('weekly-report', {
+    body: { space_id: spaceId, period_type: periodType },
+  });
+
+  if (error) throw new Error(error.message || 'Weekly report function failed');
+  if (!data?.success) {
+    const spaces = data?.spaces as { error?: string }[] | undefined;
+    const firstError = spaces?.[0]?.error;
+    return { success: false, error: firstError ?? 'Report generation failed' };
+  }
+  return { success: true };
+}

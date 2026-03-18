@@ -1,15 +1,20 @@
 import { GenerateReportButton } from '@features/generate-report';
+import { generateAggregateReport, loadAggregateReports } from '@shared/api';
 import { compareReports } from '@shared/lib/report-diff';
 import { useAppStore } from '@shared/lib/store';
+import type { AggregateReport, PeriodType } from '@shared/lib/types';
 import { Skeleton } from '@shared/ui';
 import { AdConceptsSection } from '@widgets/ad-concepts';
+import { AggregateReportView } from '@widgets/aggregate-report';
 import { ReportCard } from '@widgets/report-card';
 import { ReportDiff } from '@widgets/report-diff';
 import { SignalList } from '@widgets/signal-list';
 import { TrendBoard } from '@widgets/trend-board';
-import { BarChart3, Settings } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { BarChart3, CalendarDays, CalendarRange, Layers, Loader2, Settings } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
+
+type ViewFilter = 'all' | 'daily' | 'weekly' | 'monthly';
 
 export function SpaceDashboardPage() {
   const { slug } = useParams<{ slug: string }>();
@@ -28,6 +33,14 @@ export function SpaceDashboardPage() {
 
   const space = spaces.find((s) => s.slug === slug);
 
+  const [filter, setFilter] = useState<ViewFilter>('all');
+  const [weeklyReports, setWeeklyReports] = useState<AggregateReport[]>([]);
+  const [monthlyReports, setMonthlyReports] = useState<AggregateReport[]>([]);
+  const [aggLoading, setAggLoading] = useState(false);
+  const [aggError, setAggError] = useState<string | null>(null);
+  const [weeklyGenerating, setWeeklyGenerating] = useState(false);
+  const [monthlyGenerating, setMonthlyGenerating] = useState(false);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: sync store with URL slug and load reports
   useEffect(() => {
     if (!space) return;
@@ -37,6 +50,57 @@ export function SpaceDashboardPage() {
       loadReports();
     }
   }, [space?.id]);
+
+  const loadAllAggReports = useCallback(async () => {
+    if (!space) return;
+    setAggLoading(true);
+    setAggError(null);
+    try {
+      const [weekly, monthly] = await Promise.all([
+        loadAggregateReports(space.id, 'week'),
+        loadAggregateReports(space.id, 'month'),
+      ]);
+      setWeeklyReports(weekly);
+      setMonthlyReports(monthly);
+    } catch (err) {
+      setAggError(err instanceof Error ? err.message : 'Failed to load aggregate reports');
+    } finally {
+      setAggLoading(false);
+    }
+  }, [space]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load aggregate reports when space is ready
+  useEffect(() => {
+    if (space && activeSpaceId === space.id) {
+      loadAllAggReports();
+    }
+  }, [space?.id, activeSpaceId]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on space change
+  useEffect(() => {
+    setWeeklyReports([]);
+    setMonthlyReports([]);
+    setAggError(null);
+  }, [activeSpaceId]);
+
+  const handleGenerateAggregate = async (periodType: PeriodType) => {
+    if (!space) return;
+    const setGenerating = periodType === 'week' ? setWeeklyGenerating : setMonthlyGenerating;
+    setGenerating(true);
+    setAggError(null);
+    try {
+      const result = await generateAggregateReport(space.id, periodType);
+      if (!result.success) {
+        setAggError(result.error ?? 'Generation failed');
+      } else {
+        await loadAllAggReports();
+      }
+    } catch (err) {
+      setAggError(err instanceof Error ? err.message : 'Failed to generate report');
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
 
@@ -77,6 +141,9 @@ export function SpaceDashboardPage() {
   }
 
   const hasSubreddits = space.subreddits.length > 0;
+  const showDaily = filter === 'all' || filter === 'daily';
+  const showWeekly = filter === 'all' || filter === 'weekly';
+  const showMonthly = filter === 'all' || filter === 'monthly';
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-6">
@@ -98,6 +165,8 @@ export function SpaceDashboardPage() {
         </div>
       </div>
 
+      <ViewFilterBar value={filter} onChange={setFilter} />
+
       {!hasSubreddits && (
         <div className="mb-4 flex items-center justify-between rounded-lg border border-signal-medium/30 bg-signal-medium/10 px-4 py-3 text-sm text-signal-medium">
           <span>No subreddits configured for this space — add them in Settings.</span>
@@ -106,12 +175,12 @@ export function SpaceDashboardPage() {
           </Link>
         </div>
       )}
-      {error && (
+      {(error || aggError) && (
         <div className="mb-4 flex items-center justify-between rounded-lg border border-signal-high/30 bg-signal-high/10 px-4 py-3 text-sm text-signal-high">
-          <span>{error}</span>
+          <span>{error || aggError}</span>
           <button
             type="button"
-            onClick={clearError}
+            onClick={() => { clearError(); setAggError(null); }}
             className="font-medium hover:underline cursor-pointer"
           >
             Dismiss
@@ -119,40 +188,237 @@ export function SpaceDashboardPage() {
         </div>
       )}
 
-      {isLoading && !isGenerating ? (
+      {showDaily && (
+        <DailySection
+          reports={reports}
+          isLoading={isLoading}
+          isGenerating={isGenerating}
+          selectedReportId={selectedReportId}
+          selectedReport={selectedReport}
+          comparison={comparison}
+          spaceName={space.name}
+          onSelectReport={setSelectedReportId}
+          onDeleteReport={deleteReport}
+        />
+      )}
+
+      {showWeekly && (
+        <AggregateSection
+          title="Weekly Reports"
+          icon={<CalendarDays className="h-5 w-5 text-primary" />}
+          reports={weeklyReports}
+          isLoading={aggLoading}
+          isGenerating={weeklyGenerating}
+          periodType="week"
+          onGenerate={() => handleGenerateAggregate('week')}
+          isFirst={!showDaily}
+        />
+      )}
+
+      {showMonthly && (
+        <AggregateSection
+          title="Monthly Reports"
+          icon={<CalendarRange className="h-5 w-5 text-primary" />}
+          reports={monthlyReports}
+          isLoading={aggLoading}
+          isGenerating={monthlyGenerating}
+          periodType="month"
+          onGenerate={() => handleGenerateAggregate('month')}
+          isFirst={!showDaily && !showWeekly}
+        />
+      )}
+    </main>
+  );
+}
+
+function ViewFilterBar({ value, onChange }: { value: ViewFilter; onChange: (v: ViewFilter) => void }) {
+  const items: { key: ViewFilter; label: string; icon: typeof BarChart3 }[] = [
+    { key: 'all', label: 'All', icon: Layers },
+    { key: 'daily', label: 'Daily', icon: BarChart3 },
+    { key: 'weekly', label: 'Weekly', icon: CalendarDays },
+    { key: 'monthly', label: 'Monthly', icon: CalendarRange },
+  ];
+
+  return (
+    <div className="mb-6 flex gap-1 rounded-lg border border-border bg-card/50 p-1 w-fit">
+      {items.map((item) => {
+        const Icon = item.icon;
+        const isActive = value === item.key;
+        return (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => onChange(item.key)}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors cursor-pointer ${
+              isActive
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DailySection({
+  reports,
+  isLoading,
+  isGenerating,
+  selectedReportId,
+  selectedReport,
+  comparison,
+  spaceName,
+  onSelectReport,
+  onDeleteReport,
+}: {
+  reports: ReturnType<typeof useAppStore>['reports'];
+  isLoading: boolean;
+  isGenerating: boolean;
+  selectedReportId: string | null;
+  selectedReport: ReturnType<typeof useAppStore>['reports'][number] | null;
+  comparison: ReturnType<typeof compareReports> | null;
+  spaceName: string;
+  onSelectReport: (id: string) => void;
+  onDeleteReport: (id: string) => Promise<void>;
+}) {
+  if (isLoading && !isGenerating) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-40 w-full" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    );
+  }
+
+  if (reports.length === 0) {
+    return <EmptyState spaceName={spaceName} />;
+  }
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
+      <aside className="space-y-3">
+        <h2 className="text-sm font-medium text-muted-foreground">Daily Reports</h2>
+        {reports.map((report) => (
+          <ReportCard
+            key={report.id}
+            report={report}
+            isActive={report.id === selectedReportId}
+            onSelect={onSelectReport}
+            onDelete={onDeleteReport}
+          />
+        ))}
+      </aside>
+
+      <div className="space-y-6">
+        {selectedReport ? (
+          <>
+            <TrendBoard report={selectedReport} />
+            <AdConceptsSection concepts={selectedReport.adConcepts} />
+            {comparison && <ReportDiff comparison={comparison} />}
+            <div>
+              <h2 className="mb-3 text-lg font-semibold text-foreground">All Signals</h2>
+              <SignalList signals={selectedReport.signals} />
+            </div>
+          </>
+        ) : (
+          <p className="py-12 text-center text-muted-foreground">
+            Select a report to view details
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AggregateSection({
+  title,
+  icon,
+  reports,
+  isLoading,
+  isGenerating,
+  periodType,
+  onGenerate,
+  isFirst = false,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  reports: AggregateReport[];
+  isLoading: boolean;
+  isGenerating: boolean;
+  periodType: PeriodType;
+  onGenerate: () => void;
+  isFirst?: boolean;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(reports[0]?.id ?? null);
+
+  useEffect(() => {
+    if (reports.length > 0 && !reports.find((r) => r.id === selectedId)) {
+      setSelectedId(reports[0].id);
+    }
+  }, [reports, selectedId]);
+
+  const selectedReport = reports.find((r) => r.id === selectedId) ?? null;
+  const periodLabel = periodType === 'week' ? 'weekly' : 'monthly';
+
+  return (
+    <section className={isFirst ? '' : 'mt-10 border-t border-border pt-8'}>
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {icon}
+          <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+        </div>
+        <button
+          type="button"
+          onClick={onGenerate}
+          disabled={isGenerating}
+          className="inline-flex items-center gap-2 rounded-md bg-card border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent disabled:opacity-50 cursor-pointer whitespace-nowrap"
+        >
+          {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {isGenerating ? 'Generating...' : `Generate ${periodType === 'week' ? 'Weekly' : 'Monthly'}`}
+        </button>
+      </div>
+
+      {isLoading ? (
         <div className="space-y-4">
           <Skeleton className="h-8 w-48" />
-          <Skeleton className="h-40 w-full" />
-          <Skeleton className="h-40 w-full" />
+          <Skeleton className="h-32 w-full" />
         </div>
       ) : reports.length === 0 ? (
-        <EmptyState spaceName={space.name} />
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No {periodLabel} reports yet. They will appear here automatically or you can generate one manually.
+        </p>
       ) : (
         <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
           <aside className="space-y-3">
-            <h2 className="text-sm font-medium text-muted-foreground">Report History</h2>
             {reports.map((report) => (
-              <ReportCard
+              <button
                 key={report.id}
-                report={report}
-                isActive={report.id === selectedReportId}
-                onSelect={setSelectedReportId}
-                onDelete={deleteReport}
-              />
+                type="button"
+                onClick={() => setSelectedId(report.id)}
+                className={`w-full rounded-lg border p-3 text-left transition-colors cursor-pointer ${
+                  report.id === selectedId
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:border-primary/50 hover:bg-card/80'
+                }`}
+              >
+                <div className="text-sm font-medium text-foreground">
+                  {report.periodStart} — {report.periodEnd}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {report.totalPosts} posts · {report.clusterSummaries.length} clusters
+                </div>
+              </button>
             ))}
           </aside>
 
-          <div className="space-y-6">
+          <div>
             {selectedReport ? (
-              <>
-                <TrendBoard report={selectedReport} />
-                <AdConceptsSection concepts={selectedReport.adConcepts} />
-                {comparison && <ReportDiff comparison={comparison} />}
-                <div>
-                  <h2 className="mb-3 text-lg font-semibold text-foreground">All Signals</h2>
-                  <SignalList signals={selectedReport.signals} />
-                </div>
-              </>
+              <AggregateReportView report={selectedReport} />
             ) : (
               <p className="py-12 text-center text-muted-foreground">
                 Select a report to view details
@@ -161,7 +427,7 @@ export function SpaceDashboardPage() {
           </div>
         </div>
       )}
-    </main>
+    </section>
   );
 }
 
