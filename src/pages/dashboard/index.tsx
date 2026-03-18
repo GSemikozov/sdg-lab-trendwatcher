@@ -162,7 +162,7 @@ export function SpaceDashboardPage() {
           >
             <Settings className="h-4 w-4" />
           </Link>
-          {filter === 'daily' && <GenerateReportButton />}
+          <GenerateReportButton />
         </div>
       </div>
 
