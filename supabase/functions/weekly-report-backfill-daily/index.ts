@@ -549,7 +549,28 @@ serve(async (req) => {
               concepts,
               ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
             });
-            for (let i = 0; i < concepts.length; i++) {
+            // Await first call to surface errors in logs; rest fire-and-forget
+            let creativesError: string | undefined;
+            try {
+              const firstRes = await fetch(genUrl, {
+                method: 'POST',
+                headers: {
+                  apikey: supabaseKey,
+                  Authorization: `Bearer ${supabaseKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload(0)),
+              });
+              const firstBody = await firstRes.text();
+              if (!firstRes.ok) {
+                creativesError = `generate-creatives: ${firstRes.status} ${firstBody.slice(0, 200)}`;
+                console.error(`[weekly-report-backfill-daily:${space.name}]`, creativesError);
+              }
+            } catch (firstErr) {
+              creativesError = firstErr instanceof Error ? firstErr.message : String(firstErr);
+              console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives 0 error:`, firstErr);
+            }
+            for (let i = 1; i < concepts.length; i++) {
               fetch(genUrl, {
                 method: 'POST',
                 headers: {
@@ -561,10 +582,22 @@ serve(async (req) => {
               }).catch((err) => console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives ${i} failed:`, err));
             }
             console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives for ${concepts.length} concepts`);
+            if (creativesError) {
+              results.push({
+                spaceId: space.id,
+                spaceName: space.name,
+                success: false,
+                error: creativesError,
+              });
+            } else {
+              results.push({ spaceId: space.id, spaceName: space.name, success: true });
+            }
+          } else {
+            results.push({ spaceId: space.id, spaceName: space.name, success: true });
           }
+        } else {
+          results.push({ spaceId: space.id, spaceName: space.name, success: true });
         }
-
-        results.push({ spaceId: space.id, spaceName: space.name, success: true });
       } catch (err) {
         console.error(`[weekly-report-backfill-daily:${space.name}] Error:`, err);
         results.push({

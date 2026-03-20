@@ -19,7 +19,7 @@ import { getToken } from 'https://deno.land/x/google_jwt_sa@v0.2.5/mod.ts';
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
-const IMAGES_PER_CONCEPT = 5; // Fits within 60s Edge Function timeout (~10s per image)
+const IMAGES_PER_CONCEPT = 3; // ~30s to fit 60s timeout; DALL-E ~10s per image
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
