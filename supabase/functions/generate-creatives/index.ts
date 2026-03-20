@@ -2,19 +2,15 @@
  * Supabase Edge Function: generate-creatives
  *
  * Generates images via DALL-E 3 for each creative concept and uploads to Google Drive.
- * Called per-concept to avoid timeout (10–15 images × ~10s each).
+ * Supports OAuth (refresh token) or Service Account. OAuth works with My Drive and Shared Drives.
  *
  * Usage:
  *   POST { space_id, space_name, period_start, concept_index, concepts: AdConcept[] }
- *   — processes one concept, generates IMAGES_PER_CONCEPT images, uploads to Drive.
  *   POST { space_name, period_start, create_folders_only: true }
- *   — creates folder structure only, returns { date_folder_id } (call first to avoid race).
- *   POST { ..., date_folder_id } — uses existing folder, skips creation (avoids duplicates).
+ *   POST { ..., date_folder_id }
  *
- * Drive structure: {root}/{space_name}/{YYYY-MM-DD}/{concept-title}_1.png ...
+ * Drive auth: GOOGLE_DRIVE_REFRESH_TOKEN (OAuth) or GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON (SA)
  */
-
-import { getToken } from 'https://deno.land/x/google_jwt_sa@v0.2.5/mod.ts';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
@@ -31,6 +27,9 @@ function toFriendlyError(err: unknown): string {
   }
   if (msg.includes('DALL-E error')) {
     return 'Image generation failed. Check OPENAI_API_KEY and DALL-E quota.';
+  }
+  if (msg.includes('OAuth refresh failed') || msg.includes('invalid_grant')) {
+    return 'Google Drive OAuth token expired. Run the OAuth flow again to get a new refresh token.';
   }
   return msg.length > 200 ? msg.slice(0, 200) + '…' : msg;
 }
@@ -51,11 +50,53 @@ function sanitizeFolderName(name: string): string {
   return name.replace(/[/\\?*:|"<>']/g, '-').trim() || 'unnamed';
 }
 
-async function getDriveToken(credentialsJson: string): Promise<string> {
+async function getDriveTokenOAuth(
+  clientId: string,
+  clientSecret: string,
+  refreshToken: string,
+): Promise<string> {
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+  });
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OAuth refresh failed: ${res.status} ${err}`);
+  }
+  const data = (await res.json()) as { access_token: string };
+  return data.access_token;
+}
+
+async function getDriveTokenSa(credentialsJson: string): Promise<string> {
+  const { getToken } = await import('https://deno.land/x/google_jwt_sa@v0.2.5/mod.ts');
   const token = await getToken(credentialsJson, {
     scope: ['https://www.googleapis.com/auth/drive.file'],
   });
   return (token as { access_token: string }).access_token;
+}
+
+async function getDriveToken(env: {
+  clientId?: string;
+  clientSecret?: string;
+  refreshToken?: string;
+  saJson?: string;
+}): Promise<string> {
+  if (env.refreshToken && env.clientId && env.clientSecret) {
+    return getDriveTokenOAuth(env.clientId, env.clientSecret, env.refreshToken);
+  }
+  if (env.saJson) {
+    return getDriveTokenSa(env.saJson);
+  }
+  throw new Error(
+    'Set GOOGLE_DRIVE_REFRESH_TOKEN + GOOGLE_DRIVE_CLIENT_ID + GOOGLE_DRIVE_CLIENT_SECRET, or GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON',
+  );
 }
 
 async function findOrCreateFolder(
@@ -174,19 +215,38 @@ Deno.serve(async (req) => {
 
   try {
     const openaiKey = Deno.env.get('OPENAI_API_KEY');
-    const saJson = Deno.env.get('GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON');
     const rootFolderId = Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID');
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const clientId = Deno.env.get('GOOGLE_DRIVE_CLIENT_ID');
+    const clientSecret = Deno.env.get('GOOGLE_DRIVE_CLIENT_SECRET');
+    const refreshToken = Deno.env.get('GOOGLE_DRIVE_REFRESH_TOKEN');
+    const saJson = Deno.env.get('GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON');
 
-    if (!openaiKey || !saJson || !rootFolderId) {
+    if (!openaiKey || !rootFolderId) {
       return new Response(
         JSON.stringify({
-          error: 'Missing env: OPENAI_API_KEY, GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON, or GOOGLE_DRIVE_ROOT_FOLDER_ID',
+          error: 'Missing env: OPENAI_API_KEY or GOOGLE_DRIVE_ROOT_FOLDER_ID',
         }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
+    const hasOAuth = !!(refreshToken && clientId && clientSecret);
+    const hasSa = !!saJson;
+    if (!hasOAuth && !hasSa) {
+      return new Response(
+        JSON.stringify({
+          error:
+            'Set OAuth (GOOGLE_DRIVE_REFRESH_TOKEN + CLIENT_ID + CLIENT_SECRET) or GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON',
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const accessToken = await getDriveToken({
+      clientId,
+      clientSecret,
+      refreshToken,
+      saJson,
+    });
 
     if (req.method !== 'POST') {
       return new Response(JSON.stringify({ error: 'Use POST' }), {
