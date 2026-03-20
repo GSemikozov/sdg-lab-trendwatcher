@@ -541,15 +541,19 @@ serve(async (req) => {
             } catch (folderErr) {
               console.error(`[weekly-report-backfill-daily:${space.name}] create folders failed:`, folderErr);
             }
-            const payload = (i: number) => ({
+            const payload = (conceptIdx: number, imageOffset: number, imageCount: number) => ({
               space_id: space.id,
               space_name: space.name,
               period_start: periodStart,
-              concept_index: i,
+              concept_index: conceptIdx,
               concepts,
+              image_offset: imageOffset,
+              image_count: imageCount,
               ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
             });
-            // Await first call to surface errors in logs; rest fire-and-forget
+            // 10 images per concept = 2 batches of 5 (avoids timeout)
+            const BATCH_SIZE = 5;
+            const BATCHES_PER_CONCEPT = 2;
             let creativesError: string | undefined;
             try {
               const firstRes = await fetch(genUrl, {
@@ -559,7 +563,7 @@ serve(async (req) => {
                   Authorization: `Bearer ${supabaseKey}`,
                   'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(payload(0)),
+                body: JSON.stringify(payload(0, 0, BATCH_SIZE)),
               });
               const firstBody = await firstRes.text();
               if (!firstRes.ok) {
@@ -577,18 +581,22 @@ serve(async (req) => {
               creativesError = firstErr instanceof Error ? firstErr.message : String(firstErr);
               console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives 0 error:`, firstErr);
             }
-            for (let i = 1; i < concepts.length; i++) {
-              fetch(genUrl, {
-                method: 'POST',
-                headers: {
-                  apikey: supabaseKey,
-                  Authorization: `Bearer ${supabaseKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload(i)),
-              }).catch((err) => console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives ${i} failed:`, err));
+            for (let i = 0; i < concepts.length; i++) {
+              for (let b = 0; b < BATCHES_PER_CONCEPT; b++) {
+                if (i === 0 && b === 0) continue; // already awaited
+                const offset = b * BATCH_SIZE;
+                fetch(genUrl, {
+                  method: 'POST',
+                  headers: {
+                    apikey: supabaseKey,
+                    Authorization: `Bearer ${supabaseKey}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(payload(i, offset, BATCH_SIZE)),
+                }).catch((err) => console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives ${i} batch ${b} failed:`, err));
+              }
             }
-            console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives for ${concepts.length} concepts`);
+            console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × ${BATCHES_PER_CONCEPT} batches = 10 images each`);
             if (creativesError) {
               results.push({
                 spaceId: space.id,

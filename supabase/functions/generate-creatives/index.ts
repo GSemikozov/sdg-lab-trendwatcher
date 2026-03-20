@@ -15,7 +15,7 @@
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
-const IMAGES_PER_CONCEPT = 10; // ~100s; Supabase idle timeout 150s
+const IMAGES_PER_BATCH = 5; // ~50s per batch to avoid timeout; 2 batches = 10 images
 
 function toFriendlyError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -241,6 +241,8 @@ Deno.serve(async (req) => {
       concepts?: AdConcept[];
       create_folders_only?: boolean;
       date_folder_id?: string;
+      image_offset?: number;
+      image_count?: number;
     };
 
     const spaceName = body.space_name;
@@ -293,16 +295,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    const n = Math.min(IMAGES_PER_CONCEPT, 15);
+    const offset = Math.max(0, body.image_offset ?? 0);
+    const count = Math.min(Math.max(1, body.image_count ?? IMAGES_PER_BATCH), 15);
     const conceptFolderId = await findOrCreateFolder(accessToken, dateFolderId, concept.title);
-    console.log(`[generate-creatives] ${spaceName} / ${periodStart} / concept ${conceptIndex} (${concept.title}): generating ${n} images`);
+    console.log(`[generate-creatives] ${spaceName} / ${periodStart} / concept ${conceptIndex} (${concept.title}): images ${offset + 1}-${offset + count}`);
 
     const baseName = concept.title.replace(/[/\\?*:|"<>]/g, '-').slice(0, 50);
     const uploaded: string[] = [];
 
-    for (let i = 0; i < n; i++) {
-      const b64 = await generateImage(openaiKey, concept, i);
-      const fileName = `${baseName}_${i + 1}`;
+    for (let i = 0; i < count; i++) {
+      const imgIndex = offset + i;
+      const b64 = await generateImage(openaiKey, concept, imgIndex);
+      const fileName = `${baseName}_${imgIndex + 1}`;
       const fileId = await uploadToDrive(accessToken, conceptFolderId, fileName, b64);
       uploaded.push(fileId);
       console.log(`[generate-creatives] Uploaded ${fileName}.png`);
