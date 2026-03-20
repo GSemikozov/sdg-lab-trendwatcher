@@ -9,7 +9,7 @@
  *   POST { space_name, period_start, create_folders_only: true }
  *   POST { ..., date_folder_id }
  *
- * Drive auth: GOOGLE_DRIVE_REFRESH_TOKEN (OAuth) or GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON (SA)
+ * Drive auth: GOOGLE_DRIVE_REFRESH_TOKEN + CLIENT_ID + CLIENT_SECRET (OAuth)
  */
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
@@ -74,29 +74,12 @@ async function getDriveTokenOAuth(
   return data.access_token;
 }
 
-async function getDriveTokenSa(credentialsJson: string): Promise<string> {
-  const { getToken } = await import('https://deno.land/x/google_jwt_sa@v0.2.5/mod.ts');
-  const token = await getToken(credentialsJson, {
-    scope: ['https://www.googleapis.com/auth/drive.file'],
-  });
-  return (token as { access_token: string }).access_token;
-}
-
 async function getDriveToken(env: {
-  clientId?: string;
-  clientSecret?: string;
-  refreshToken?: string;
-  saJson?: string;
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
 }): Promise<string> {
-  if (env.refreshToken && env.clientId && env.clientSecret) {
-    return getDriveTokenOAuth(env.clientId, env.clientSecret, env.refreshToken);
-  }
-  if (env.saJson) {
-    return getDriveTokenSa(env.saJson);
-  }
-  throw new Error(
-    'Set GOOGLE_DRIVE_REFRESH_TOKEN + GOOGLE_DRIVE_CLIENT_ID + GOOGLE_DRIVE_CLIENT_SECRET, or GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON',
-  );
+  return getDriveTokenOAuth(env.clientId, env.clientSecret, env.refreshToken);
 }
 
 async function findOrCreateFolder(
@@ -219,7 +202,6 @@ Deno.serve(async (req) => {
     const clientId = Deno.env.get('GOOGLE_DRIVE_CLIENT_ID');
     const clientSecret = Deno.env.get('GOOGLE_DRIVE_CLIENT_SECRET');
     const refreshToken = Deno.env.get('GOOGLE_DRIVE_REFRESH_TOKEN');
-    const saJson = Deno.env.get('GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON');
 
     if (!openaiKey || !rootFolderId) {
       return new Response(
@@ -229,13 +211,10 @@ Deno.serve(async (req) => {
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
-    const hasOAuth = !!(refreshToken && clientId && clientSecret);
-    const hasSa = !!saJson;
-    if (!hasOAuth && !hasSa) {
+    if (!refreshToken || !clientId || !clientSecret) {
       return new Response(
         JSON.stringify({
-          error:
-            'Set OAuth (GOOGLE_DRIVE_REFRESH_TOKEN + CLIENT_ID + CLIENT_SECRET) or GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON',
+          error: 'Set GOOGLE_DRIVE_REFRESH_TOKEN, GOOGLE_DRIVE_CLIENT_ID, GOOGLE_DRIVE_CLIENT_SECRET',
         }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
@@ -245,7 +224,6 @@ Deno.serve(async (req) => {
       clientId,
       clientSecret,
       refreshToken,
-      saJson,
     });
 
     if (req.method !== 'POST') {
@@ -279,7 +257,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    const accessToken = await getDriveToken(saJson);
     let dateFolderId: string;
 
     if (dateFolderIdProvided) {
