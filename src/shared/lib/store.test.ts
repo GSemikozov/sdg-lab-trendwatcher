@@ -7,6 +7,7 @@ const mockSpace = {
   slug: 'test-space',
   description: 'Test description',
   domainPrompt: 'You are a test analyst',
+  creativeImagePrompt: '',
   subreddits: ['lonely', 'depression', 'socialskills'],
   emailRecipients: ['test@test.com'],
   isActive: true,

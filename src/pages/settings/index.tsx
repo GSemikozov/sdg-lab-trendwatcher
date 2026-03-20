@@ -1,5 +1,9 @@
 import { EmailRecipients } from '@features/configure-email';
 import { SubredditPicker } from '@features/configure-subreddits';
+import {
+  CREATIVE_IMAGE_EXAMPLE_MINIMAL_SPIRITUAL,
+  CREATIVE_IMAGE_EXAMPLE_SLEEVE_TEXT,
+} from '@shared/lib/creative-image-prompt-examples';
 import { useAppStore } from '@shared/lib/store';
 import {
   Badge,
@@ -15,6 +19,7 @@ import {
   Database,
   FileText,
   Globe,
+  ImageIcon,
   Mail,
   Radio,
   Settings,
@@ -68,6 +73,104 @@ function DomainPromptCard() {
             size="sm"
             onClick={handleSave}
             disabled={value === (activeSpace?.domainPrompt ?? '')}
+          >
+            Save prompt
+          </Button>
+          {saved && <span className="text-xs text-trend-up">Saved</span>}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CreativeImagePromptCard() {
+  const activeSpace = useAppStore((s) => s.spaces.find((sp) => sp.id === s.activeSpaceId));
+  const updateSpaceSettings = useAppStore((s) => s.updateSpaceSettings);
+  const [value, setValue] = useState('');
+  const [saved, setSaved] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const spacePrompt = activeSpace?.creativeImagePrompt;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset form when space changes
+  useEffect(() => {
+    setValue(spacePrompt ?? '');
+  }, [activeSpace?.id, spacePrompt]);
+
+  const handleSave = () => {
+    updateSpaceSettings({ creativeImagePrompt: value });
+    setSaved(true);
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <ImageIcon className="h-5 w-5 text-primary" />
+          <CardTitle>Creative image prompt</CardTitle>
+        </div>
+        <CardDescription>
+          Extra instructions for DALL-E when generating weekly ad creatives (saved to Google Drive).
+          Leave empty to use the default style. The creative title and description from the report are
+          always appended below your text. API outputs <strong>1024×1024</strong> — describe composition
+          accordingly; on-image text may be imperfect.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <textarea
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          rows={6}
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none resize-y"
+          placeholder="Paste or write your image brief (style, scene, mood, composition)…"
+        />
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setValue(CREATIVE_IMAGE_EXAMPLE_MINIMAL_SPIRITUAL)}
+          >
+            Insert example 1 (spiritual / square)
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setValue(CREATIVE_IMAGE_EXAMPLE_SLEEVE_TEXT)}
+          >
+            Insert example 2 (sleeve text / vertical)
+          </Button>
+        </div>
+        <details className="mt-4 rounded-md border border-border bg-card/50 px-3 py-2 text-sm">
+          <summary className="cursor-pointer font-medium text-foreground">
+            Reference: full example prompts (same as buttons above)
+          </summary>
+          <div className="mt-3 space-y-4 text-muted-foreground">
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-foreground">
+                Example 1 — minimalist spiritual
+              </p>
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 text-xs">
+                {CREATIVE_IMAGE_EXAMPLE_MINIMAL_SPIRITUAL}
+              </pre>
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-foreground">
+                Example 2 — photoreal sleeve + copy
+              </p>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 text-xs">
+                {CREATIVE_IMAGE_EXAMPLE_SLEEVE_TEXT}
+              </pre>
+            </div>
+          </div>
+        </details>
+        <div className="mt-3 flex items-center gap-3">
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={value === (activeSpace?.creativeImagePrompt ?? '')}
           >
             Save prompt
           </Button>
@@ -223,6 +326,8 @@ export function SpaceSettingsPage() {
         </Card>
 
         <DomainPromptCard />
+
+        <CreativeImagePromptCard />
 
         <Card>
           <CardHeader>

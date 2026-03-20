@@ -160,12 +160,24 @@ async function uploadToDrive(
 
 // --- DALL-E 3 ---
 
+const DEFAULT_IMAGE_PROMPT_PREFIX =
+  'Meta ad creative concept. Style: modern, high-contrast, suitable for social media feed. No legible text in the image.';
+
+function buildImagePrompt(concept: AdConcept, creativeImagePrompt?: string): string {
+  const conceptLine = `Concept title: "${concept.title}". ${concept.description}`;
+  if (creativeImagePrompt?.trim()) {
+    return `${creativeImagePrompt.trim()}\n\n${conceptLine}`;
+  }
+  return `${DEFAULT_IMAGE_PROMPT_PREFIX}\n\n${conceptLine}`;
+}
+
 async function generateImage(
   openaiKey: string,
   concept: AdConcept,
   index: number,
+  creativeImagePrompt?: string,
 ): Promise<string> {
-  const prompt = `Meta ad creative concept: "${concept.title}". ${concept.description}. Style: modern, high-contrast, suitable for social media feed. No text in the image.`;
+  const prompt = buildImagePrompt(concept, creativeImagePrompt);
   const res = await fetch(`${OPENAI_BASE}/images/generations`, {
     method: 'POST',
     headers: {
@@ -245,7 +257,9 @@ Deno.serve(async (req) => {
       concept_folder_id?: string;
       image_offset?: number;
       image_count?: number;
+      creative_image_prompt?: string;
     };
+    const creativeImagePrompt = typeof body.creative_image_prompt === 'string' ? body.creative_image_prompt : '';
 
     const spaceName = body.space_name;
     const periodStart = body.period_start;
@@ -328,7 +342,7 @@ Deno.serve(async (req) => {
 
     for (let i = 0; i < count; i++) {
       const imgIndex = offset + i;
-      const b64 = await generateImage(openaiKey, concept, imgIndex);
+      const b64 = await generateImage(openaiKey, concept, imgIndex, creativeImagePrompt);
       const fileName = `${baseName}_${imgIndex + 1}`;
       const fileId = await uploadToDrive(accessToken, conceptFolderId, fileName, b64);
       uploaded.push(fileId);

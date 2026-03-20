@@ -68,6 +68,8 @@ export interface Space {
   slug: string;
   description: string;
   domainPrompt: string;
+  /** Extra instructions for DALL-E when generating ad creatives (Drive). Empty = use default. */
+  creativeImagePrompt: string;
   subreddits: string[];
   emailRecipients: string[];
   isActive: boolean;
