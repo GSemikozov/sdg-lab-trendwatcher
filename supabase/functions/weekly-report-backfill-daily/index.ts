@@ -511,6 +511,34 @@ serve(async (req) => {
           }
         }
 
+        // Fire-and-forget: trigger generate-creatives for each concept (DALL-E 3 + Drive upload)
+        const concepts = analysis.creative_concepts ?? [];
+        if (concepts.length > 0) {
+          const supabaseUrl = Deno.env.get('SUPABASE_URL');
+          const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+          if (supabaseUrl && supabaseKey) {
+            const genUrl = `${supabaseUrl}/functions/v1/generate-creatives`;
+            for (let i = 0; i < concepts.length; i++) {
+              fetch(genUrl, {
+                method: 'POST',
+                headers: {
+                  apikey: supabaseKey,
+                  Authorization: `Bearer ${supabaseKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  space_id: space.id,
+                  space_name: space.name,
+                  period_start: periodStart,
+                  concept_index: i,
+                  concepts,
+                }),
+              }).catch((err) => console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives ${i} failed:`, err));
+            }
+            console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives for ${concepts.length} concepts`);
+          }
+        }
+
         results.push({ spaceId: space.id, spaceName: space.name, success: true });
       } catch (err) {
         console.error(`[weekly-report-backfill-daily:${space.name}] Error:`, err);

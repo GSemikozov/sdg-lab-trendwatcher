@@ -86,6 +86,10 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 # Reddit OAuth (optional — enables full API access)
 REDDIT_CLIENT_ID=
 REDDIT_CLIENT_SECRET=
+
+# Google Drive (for generate-creatives: DALL-E 3 → Drive upload)
+GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON={"type":"service_account",...}  # Full JSON from GCP Service Account key
+GOOGLE_DRIVE_ROOT_FOLDER_ID=xxx   # Folder ID from Drive URL (folders/XXX)
 ```
 
 ### Database Setup (Supabase SQL Editor)

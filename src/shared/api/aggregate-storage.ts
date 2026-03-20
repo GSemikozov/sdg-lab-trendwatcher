@@ -55,11 +55,14 @@ export async function generateAggregateReport(
   spaceId: string,
   periodType: PeriodType,
 ): Promise<{ success: boolean; error?: string }> {
-  const { data, error } = await supabase.functions.invoke('weekly-report', {
-    body: { space_id: spaceId, period_type: periodType },
+  // Weekly: use backfill (daily reports) — works without embeddings/clusters.
+  // Monthly: use weekly-report (cluster-based) — requires embeddings.
+  const fn = periodType === 'week' ? 'weekly-report-backfill-daily' : 'weekly-report';
+  const { data, error } = await supabase.functions.invoke(fn, {
+    body: periodType === 'week' ? { space_id: spaceId } : { space_id: spaceId, period_type: periodType },
   });
 
-  if (error) throw new Error(error.message || 'Weekly report function failed');
+  if (error) throw new Error(error.message || 'Report function failed');
   if (!data?.success) {
     const spaces = data?.spaces as { error?: string }[] | undefined;
     const firstError = spaces?.[0]?.error;
