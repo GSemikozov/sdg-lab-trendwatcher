@@ -563,8 +563,15 @@ serve(async (req) => {
               });
               const firstBody = await firstRes.text();
               if (!firstRes.ok) {
-                creativesError = `generate-creatives: ${firstRes.status} ${firstBody.slice(0, 200)}`;
-                console.error(`[weekly-report-backfill-daily:${space.name}]`, creativesError);
+                let errMsg = firstBody;
+                try {
+                  const parsed = JSON.parse(firstBody) as { error?: string };
+                  if (parsed?.error) errMsg = parsed.error;
+                } catch {
+                  errMsg = firstBody.slice(0, 200);
+                }
+                creativesError = errMsg;
+                console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives failed:`, creativesError);
               }
             } catch (firstErr) {
               creativesError = firstErr instanceof Error ? firstErr.message : String(firstErr);

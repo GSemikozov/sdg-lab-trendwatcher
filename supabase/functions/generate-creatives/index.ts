@@ -21,6 +21,20 @@ const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const IMAGES_PER_CONCEPT = 3; // ~30s to fit 60s timeout; DALL-E ~10s per image
 
+function toFriendlyError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('storageQuotaExceeded') || msg.includes('Service Accounts do not have storage quota')) {
+    return 'Google Drive: use a Shared Drive (not My Drive). Create a Shared Drive, add the service account as a member, and use that folder ID in GOOGLE_DRIVE_ROOT_FOLDER_ID.';
+  }
+  if (msg.includes('Drive upload error') || msg.includes('Drive list error') || msg.includes('Drive create folder')) {
+    return 'Google Drive error. Check folder permissions and that the root folder is in a Shared Drive.';
+  }
+  if (msg.includes('DALL-E error')) {
+    return 'Image generation failed. Check OPENAI_API_KEY and DALL-E quota.';
+  }
+  return msg.length > 200 ? msg.slice(0, 200) + '…' : msg;
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -271,7 +285,7 @@ Deno.serve(async (req) => {
   } catch (err) {
     console.error('[generate-creatives] Error:', err);
     return new Response(
-      JSON.stringify({ error: err instanceof Error ? err.message : 'Unknown error' }),
+      JSON.stringify({ error: toFriendlyError(err) }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
