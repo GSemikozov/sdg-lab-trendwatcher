@@ -518,8 +518,9 @@ serve(async (req) => {
           const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
           if (supabaseUrl && supabaseKey) {
             const genUrl = `${supabaseUrl}/functions/v1/generate-creatives`;
-            // Create folder structure once to avoid race (5 parallel calls each creating "SDG Lab")
+            // Create date + concept folders once to avoid race (duplicate "Late-Night Connection" etc)
             let dateFolderId: string | undefined;
+            let conceptFolderIds: string[] = [];
             try {
               const folderRes = await fetch(genUrl, {
                 method: 'POST',
@@ -538,6 +539,27 @@ serve(async (req) => {
                 const folderData = (await folderRes.json()) as { date_folder_id?: string };
                 dateFolderId = folderData.date_folder_id;
               }
+              if (dateFolderId && concepts.length > 0) {
+                const conceptFoldersRes = await fetch(genUrl, {
+                  method: 'POST',
+                  headers: {
+                    apikey: supabaseKey,
+                    Authorization: `Bearer ${supabaseKey}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    space_name: space.name,
+                    period_start: periodStart,
+                    date_folder_id: dateFolderId,
+                    concepts,
+                    create_concept_folders_only: true,
+                  }),
+                });
+                if (conceptFoldersRes.ok) {
+                  const cfData = (await conceptFoldersRes.json()) as { concept_folder_ids?: string[] };
+                  conceptFolderIds = cfData.concept_folder_ids ?? [];
+                }
+              }
             } catch (folderErr) {
               console.error(`[weekly-report-backfill-daily:${space.name}] create folders failed:`, folderErr);
             }
@@ -550,12 +572,13 @@ serve(async (req) => {
               image_offset: imageOffset,
               image_count: imageCount,
               ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
+              ...(conceptFolderIds[conceptIdx] ? { concept_folder_id: conceptFolderIds[conceptIdx] } : {}),
             });
-            // 10 images per concept = 2 batches of 5 (avoids timeout)
-            const BATCH_SIZE = 5;
-            const BATCHES_PER_CONCEPT = 2;
+            // 10 images per concept = 3 batches of 4,3,3 (avoids CPU time limit)
+            const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]];
             let creativesError: string | undefined;
             try {
+              const [firstOffset, firstCount] = BATCHES[0];
               const firstRes = await fetch(genUrl, {
                 method: 'POST',
                 headers: {
@@ -563,7 +586,7 @@ serve(async (req) => {
                   Authorization: `Bearer ${supabaseKey}`,
                   'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(payload(0, 0, BATCH_SIZE)),
+                body: JSON.stringify(payload(0, firstOffset, firstCount)),
               });
               const firstBody = await firstRes.text();
               if (!firstRes.ok) {
@@ -582,9 +605,9 @@ serve(async (req) => {
               console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives 0 error:`, firstErr);
             }
             for (let i = 0; i < concepts.length; i++) {
-              for (let b = 0; b < BATCHES_PER_CONCEPT; b++) {
+              for (let b = 0; b < BATCHES.length; b++) {
                 if (i === 0 && b === 0) continue; // already awaited
-                const offset = b * BATCH_SIZE;
+                const [offset, count] = BATCHES[b];
                 fetch(genUrl, {
                   method: 'POST',
                   headers: {
@@ -592,11 +615,11 @@ serve(async (req) => {
                     Authorization: `Bearer ${supabaseKey}`,
                     'Content-Type': 'application/json',
                   },
-                  body: JSON.stringify(payload(i, offset, BATCH_SIZE)),
+                  body: JSON.stringify(payload(i, offset, count)),
                 }).catch((err) => console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives ${i} batch ${b} failed:`, err));
               }
             }
-            console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × ${BATCHES_PER_CONCEPT} batches = 10 images each`);
+            console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × 3 batches = 10 images each`);
             if (creativesError) {
               results.push({
                 spaceId: space.id,

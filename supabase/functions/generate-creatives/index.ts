@@ -240,7 +240,9 @@ Deno.serve(async (req) => {
       concept_index?: number;
       concepts?: AdConcept[];
       create_folders_only?: boolean;
+      create_concept_folders_only?: boolean;
       date_folder_id?: string;
+      concept_folder_id?: string;
       image_offset?: number;
       image_count?: number;
     };
@@ -250,7 +252,9 @@ Deno.serve(async (req) => {
     const conceptIndex = body.concept_index ?? 0;
     const concepts = body.concepts ?? [];
     const createFoldersOnly = body.create_folders_only === true;
+    const createConceptFoldersOnly = body.create_concept_folders_only === true;
     const dateFolderIdProvided = typeof body.date_folder_id === 'string';
+    const conceptFolderIdProvided = typeof body.concept_folder_id === 'string';
 
     if (!spaceName || !periodStart) {
       return new Response(
@@ -280,6 +284,23 @@ Deno.serve(async (req) => {
       );
     }
 
+    if (createConceptFoldersOnly && concepts.length > 0) {
+      const ids: string[] = [];
+      for (let i = 0; i < concepts.length; i++) {
+        const id = await findOrCreateFolder(accessToken, dateFolderId, concepts[i].title);
+        ids.push(id);
+      }
+      return new Response(
+        JSON.stringify({
+          success: true,
+          concept_folder_ids: ids,
+          space_name: spaceName,
+          period_start: periodStart,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     if (concepts.length === 0) {
       return new Response(
         JSON.stringify({ error: 'Missing concepts' }),
@@ -297,7 +318,9 @@ Deno.serve(async (req) => {
 
     const offset = Math.max(0, body.image_offset ?? 0);
     const count = Math.min(Math.max(1, body.image_count ?? IMAGES_PER_BATCH), 15);
-    const conceptFolderId = await findOrCreateFolder(accessToken, dateFolderId, concept.title);
+    const conceptFolderId = conceptFolderIdProvided
+      ? body.concept_folder_id!
+      : await findOrCreateFolder(accessToken, dateFolderId, concept.title);
     console.log(`[generate-creatives] ${spaceName} / ${periodStart} / concept ${conceptIndex} (${concept.title}): images ${offset + 1}-${offset + count}`);
 
     const baseName = concept.title.replace(/[/\\?*:|"<>]/g, '-').slice(0, 50);

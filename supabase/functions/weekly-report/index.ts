@@ -596,6 +596,7 @@ async function processSpace(
   if (concepts.length > 0) {
     const genUrl = `${supabaseUrl}/functions/v1/generate-creatives`;
     let dateFolderId: string | undefined;
+    let conceptFolderIds: string[] = [];
     try {
       const folderRes = await fetch(genUrl, {
         method: 'POST',
@@ -614,13 +615,34 @@ async function processSpace(
         const folderData = (await folderRes.json()) as { date_folder_id?: string };
         dateFolderId = folderData.date_folder_id;
       }
+      if (dateFolderId) {
+        const cfRes = await fetch(genUrl, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseKey,
+            Authorization: `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            space_name: space.name,
+            period_start: periodStart,
+            date_folder_id: dateFolderId,
+            concepts,
+            create_concept_folders_only: true,
+          }),
+        });
+        if (cfRes.ok) {
+          const cfData = (await cfRes.json()) as { concept_folder_ids?: string[] };
+          conceptFolderIds = cfData.concept_folder_ids ?? [];
+        }
+      }
     } catch (folderErr) {
       console.error(`[weekly-report:${space.name}] create folders failed:`, folderErr);
     }
-    const BATCH_SIZE = 5;
-    const BATCHES_PER_CONCEPT = 2;
+    const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]]; // 10 images in 3 batches
     for (let i = 0; i < concepts.length; i++) {
-      for (let b = 0; b < BATCHES_PER_CONCEPT; b++) {
+      for (let b = 0; b < BATCHES.length; b++) {
+        const [offset, count] = BATCHES[b];
         fetch(genUrl, {
           method: 'POST',
           headers: {
@@ -634,14 +656,15 @@ async function processSpace(
             period_start: periodStart,
             concept_index: i,
             concepts,
-            image_offset: b * BATCH_SIZE,
-            image_count: BATCH_SIZE,
+            image_offset: offset,
+            image_count: count,
             ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
+            ...(conceptFolderIds[i] ? { concept_folder_id: conceptFolderIds[i] } : {}),
           }),
         }).catch((err) => console.error(`[weekly-report:${space.name}] generate-creatives ${i} batch ${b} failed:`, err));
       }
     }
-    console.log(`[weekly-report:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × ${BATCHES_PER_CONCEPT} batches = 10 images each`);
+    console.log(`[weekly-report:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × 3 batches = 10 images each`);
   }
 
   return { spaceId: space.id, spaceName: space.name, success: true };
