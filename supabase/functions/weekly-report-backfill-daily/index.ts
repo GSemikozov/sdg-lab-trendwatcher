@@ -511,13 +511,44 @@ serve(async (req) => {
           }
         }
 
-        // Fire-and-forget: trigger generate-creatives for each concept (DALL-E 3 + Drive upload)
+        // Create Drive folders once, then trigger generate-creatives per concept (avoids duplicates)
         const concepts = analysis.creative_concepts ?? [];
         if (concepts.length > 0) {
           const supabaseUrl = Deno.env.get('SUPABASE_URL');
           const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
           if (supabaseUrl && supabaseKey) {
             const genUrl = `${supabaseUrl}/functions/v1/generate-creatives`;
+            // Create folder structure once to avoid race (5 parallel calls each creating "SDG Lab")
+            let dateFolderId: string | undefined;
+            try {
+              const folderRes = await fetch(genUrl, {
+                method: 'POST',
+                headers: {
+                  apikey: supabaseKey,
+                  Authorization: `Bearer ${supabaseKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  space_name: space.name,
+                  period_start: periodStart,
+                  create_folders_only: true,
+                }),
+              });
+              if (folderRes.ok) {
+                const folderData = (await folderRes.json()) as { date_folder_id?: string };
+                dateFolderId = folderData.date_folder_id;
+              }
+            } catch (folderErr) {
+              console.error(`[weekly-report-backfill-daily:${space.name}] create folders failed:`, folderErr);
+            }
+            const payload = (i: number) => ({
+              space_id: space.id,
+              space_name: space.name,
+              period_start: periodStart,
+              concept_index: i,
+              concepts,
+              ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
+            });
             for (let i = 0; i < concepts.length; i++) {
               fetch(genUrl, {
                 method: 'POST',
@@ -526,13 +557,7 @@ serve(async (req) => {
                   Authorization: `Bearer ${supabaseKey}`,
                   'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                  space_id: space.id,
-                  space_name: space.name,
-                  period_start: periodStart,
-                  concept_index: i,
-                  concepts,
-                }),
+                body: JSON.stringify(payload(i)),
               }).catch((err) => console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives ${i} failed:`, err));
             }
             console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives for ${concepts.length} concepts`);

@@ -7,6 +7,9 @@
  * Usage:
  *   POST { space_id, space_name, period_start, concept_index, concepts: AdConcept[] }
  *   — processes one concept, generates IMAGES_PER_CONCEPT images, uploads to Drive.
+ *   POST { space_name, period_start, create_folders_only: true }
+ *   — creates folder structure only, returns { date_folder_id } (call first to avoid race).
+ *   POST { ..., date_folder_id } — uses existing folder, skips creation (avoids duplicates).
  *
  * Drive structure: {root}/{space_name}/{YYYY-MM-DD}/{concept-title}_1.png ...
  */
@@ -16,7 +19,7 @@ import { getToken } from 'https://deno.land/x/google_jwt_sa@v0.2.5/mod.ts';
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
-const IMAGES_PER_CONCEPT = 10; // Reduce to 5 if Edge Function times out (~60s default)
+const IMAGES_PER_CONCEPT = 5; // Fits within 60s Edge Function timeout (~10s per image)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -184,16 +187,49 @@ Deno.serve(async (req) => {
       period_start?: string;
       concept_index?: number;
       concepts?: AdConcept[];
+      create_folders_only?: boolean;
+      date_folder_id?: string;
     };
 
     const spaceName = body.space_name;
     const periodStart = body.period_start;
     const conceptIndex = body.concept_index ?? 0;
     const concepts = body.concepts ?? [];
+    const createFoldersOnly = body.create_folders_only === true;
+    const dateFolderIdProvided = typeof body.date_folder_id === 'string';
 
-    if (!spaceName || !periodStart || concepts.length === 0) {
+    if (!spaceName || !periodStart) {
       return new Response(
-        JSON.stringify({ error: 'Missing space_name, period_start, or concepts' }),
+        JSON.stringify({ error: 'Missing space_name or period_start' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const accessToken = await getDriveToken(saJson);
+    let dateFolderId: string;
+
+    if (dateFolderIdProvided) {
+      dateFolderId = body.date_folder_id!;
+    } else {
+      const spaceFolderId = await findOrCreateFolder(accessToken, rootFolderId, spaceName);
+      dateFolderId = await findOrCreateFolder(accessToken, spaceFolderId, periodStart);
+    }
+
+    if (createFoldersOnly) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          date_folder_id: dateFolderId,
+          space_name: spaceName,
+          period_start: periodStart,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (concepts.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'Missing concepts' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
@@ -208,10 +244,6 @@ Deno.serve(async (req) => {
 
     const n = Math.min(IMAGES_PER_CONCEPT, 15);
     console.log(`[generate-creatives] ${spaceName} / ${periodStart} / concept ${conceptIndex}: generating ${n} images`);
-
-    const accessToken = await getDriveToken(saJson);
-    const spaceFolderId = await findOrCreateFolder(accessToken, rootFolderId, spaceName);
-    const dateFolderId = await findOrCreateFolder(accessToken, spaceFolderId, periodStart);
 
     const baseName = concept.title.replace(/[/\\?*:|"<>]/g, '-').slice(0, 50);
     const uploaded: string[] = [];

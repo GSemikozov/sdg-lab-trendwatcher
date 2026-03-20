@@ -591,10 +591,32 @@ async function processSpace(
     }
   }
 
-  // 8. Fire-and-forget: trigger generate-creatives for each concept (DALL-E 3 + Drive upload)
+  // 8. Create Drive folders once, then fire-and-forget generate-creatives per concept (avoids duplicates)
   const concepts = analysis.creative_concepts ?? [];
   if (concepts.length > 0) {
     const genUrl = `${supabaseUrl}/functions/v1/generate-creatives`;
+    let dateFolderId: string | undefined;
+    try {
+      const folderRes = await fetch(genUrl, {
+        method: 'POST',
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          space_name: space.name,
+          period_start: periodStart,
+          create_folders_only: true,
+        }),
+      });
+      if (folderRes.ok) {
+        const folderData = (await folderRes.json()) as { date_folder_id?: string };
+        dateFolderId = folderData.date_folder_id;
+      }
+    } catch (folderErr) {
+      console.error(`[weekly-report:${space.name}] create folders failed:`, folderErr);
+    }
     for (let i = 0; i < concepts.length; i++) {
       fetch(genUrl, {
         method: 'POST',
@@ -609,6 +631,7 @@ async function processSpace(
           period_start: periodStart,
           concept_index: i,
           concepts,
+          ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
         }),
       }).catch((err) => console.error(`[weekly-report:${space.name}] generate-creatives ${i} failed:`, err));
     }
