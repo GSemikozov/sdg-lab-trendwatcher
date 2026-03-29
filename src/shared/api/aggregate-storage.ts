@@ -1,5 +1,5 @@
 import type { AdConcept, AggregateReport, ClusterSummary, PeriodType, Signal } from '@shared/lib/types';
-import { edgeFunctionInvokeHeaders, supabase } from './supabase';
+import { supabase } from './supabase';
 
 interface AggregateRow {
   id: string;
@@ -60,7 +60,6 @@ export async function generateAggregateReport(
   const fn = periodType === 'week' ? 'weekly-report-backfill-daily' : 'weekly-report';
   const { data, error } = await supabase.functions.invoke(fn, {
     body: periodType === 'week' ? { space_id: spaceId } : { space_id: spaceId, period_type: periodType },
-    headers: edgeFunctionInvokeHeaders(),
   });
 
   if (error) throw new Error(error.message || 'Report function failed');
