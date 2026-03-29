@@ -109,6 +109,78 @@ function getPreviousWeek(): { start: string; end: string } {
   };
 }
 
+const CREATIVE_IMAGE_CAP = 15;
+const CREATIVE_IMAGE_MIN = 10;
+
+function randomCreativeTarget(): number {
+  return CREATIVE_IMAGE_MIN + Math.floor(Math.random() * 6);
+}
+
+async function fillCreativeFolderForConcept(
+  conceptIdx: number,
+  target: number,
+  initialFileIndex: number,
+  logPrefix: string,
+  postBatch: (conceptIdx: number, offset: number, count: number) => Promise<Response>,
+): Promise<void> {
+  let idx = initialFileIndex;
+  let stagnant = 0;
+  const maxRounds = 40;
+
+  const runPhase = async (cond: (fileIndex: number) => boolean) => {
+    let rounds = 0;
+    stagnant = 0;
+    while (cond(idx) && idx < CREATIVE_IMAGE_CAP && rounds < maxRounds) {
+      rounds++;
+      const attempts = Math.min(5, CREATIVE_IMAGE_CAP - idx);
+      if (attempts < 1) break;
+      try {
+        const res = await postBatch(conceptIdx, idx, attempts);
+        const text = await res.text();
+        if (!res.ok) {
+          console.error(`${logPrefix} concept ${conceptIdx} HTTP ${res.status}:`, text.slice(0, 500));
+          stagnant++;
+          if (stagnant >= 4) break;
+          continue;
+        }
+        let j: {
+          partial?: boolean;
+          images_uploaded?: number;
+          next_file_index?: number;
+          images_attempts?: number;
+          images_expected?: number;
+        };
+        try {
+          j = JSON.parse(text) as typeof j;
+        } catch {
+          stagnant++;
+          if (stagnant >= 4) break;
+          continue;
+        }
+        const added = j.images_uploaded ?? 0;
+        idx = typeof j.next_file_index === 'number' ? j.next_file_index : idx + added;
+        if (j.partial) {
+          const exp = j.images_attempts ?? j.images_expected;
+          console.warn(`${logPrefix} concept ${conceptIdx} partial: ${j.images_uploaded}/${exp}`);
+        }
+        if (added === 0) {
+          stagnant++;
+          if (stagnant >= 4) break;
+        } else {
+          stagnant = 0;
+        }
+      } catch (e) {
+        console.error(`${logPrefix} concept ${conceptIdx}:`, e);
+        stagnant++;
+        if (stagnant >= 4) break;
+      }
+    }
+  };
+
+  await runPhase((cur) => cur < target);
+  await runPhase((cur) => cur < CREATIVE_IMAGE_MIN);
+}
+
 function buildBackfillPrompt(domainPrompt: string): string {
   const base = `You are generating a weekly trend report for a startup.
 Your job: synthesize weekly insights from already-generated DAILY TrendWatcher reports.
@@ -590,9 +662,7 @@ serve(async (req) => {
               ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
               ...(conceptFolderIds[conceptIdx] ? { concept_folder_id: conceptFolderIds[conceptIdx] } : {}),
             });
-            // 10 images per concept = 3 batches of 4,3,3. Run batches sequentially per concept
-            // (fewer parallel DALL-E calls → fewer 429s). Concepts still run in parallel.
-            const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]];
+            const targets = concepts.map(() => randomCreativeTarget());
             const logP = `[weekly-report-backfill-daily:${space.name}]`;
 
             const postBatch = (conceptIdx: number, offset: number, count: number) =>
@@ -607,10 +677,11 @@ serve(async (req) => {
               });
 
             let creativesError: string | undefined;
+            let concept0StartIndex = 0;
             if (concepts.length > 0) {
               try {
-                const [o0, c0] = BATCHES[0];
-                const firstRes = await postBatch(0, o0, c0);
+                const firstAttempts = Math.min(5, CREATIVE_IMAGE_CAP);
+                const firstRes = await postBatch(0, 0, firstAttempts);
                 const firstBody = await firstRes.text();
                 if (!firstRes.ok) {
                   let errMsg = firstBody;
@@ -622,6 +693,14 @@ serve(async (req) => {
                   }
                   creativesError = errMsg;
                   console.error(`${logP} generate-creatives failed:`, creativesError);
+                } else {
+                  try {
+                    const j = JSON.parse(firstBody) as { next_file_index?: number; images_uploaded?: number };
+                    concept0StartIndex =
+                      typeof j.next_file_index === 'number' ? j.next_file_index : (j.images_uploaded ?? 0);
+                  } catch {
+                    concept0StartIndex = 0;
+                  }
                 }
               } catch (firstErr) {
                 creativesError = firstErr instanceof Error ? firstErr.message : String(firstErr);
@@ -631,36 +710,16 @@ serve(async (req) => {
               const work = (async () => {
                 await Promise.all(
                   concepts.map(async (_, conceptIdx) => {
-                    for (let b = 0; b < BATCHES.length; b++) {
-                      if (conceptIdx === 0 && b === 0) continue;
-                      const [offset, count] = BATCHES[b];
-                      try {
-                        const res = await postBatch(conceptIdx, offset, count);
-                        const text = await res.text();
-                        if (!res.ok) {
-                          console.error(`${logP} concept ${conceptIdx} batch ${b} HTTP ${res.status}:`, text.slice(0, 500));
-                        } else {
-                          try {
-                            const j = JSON.parse(text) as { partial?: boolean; images_uploaded?: number; images_expected?: number };
-                            if (j.partial) {
-                              console.warn(
-                                `${logP} concept ${conceptIdx} batch ${b} partial: ${j.images_uploaded}/${j.images_expected}`,
-                              );
-                            }
-                          } catch {
-                            /* ignore */
-                          }
-                        }
-                      } catch (e) {
-                        console.error(`${logP} concept ${conceptIdx} batch ${b}:`, e);
-                      }
-                    }
+                    const startIdx = conceptIdx === 0 ? concept0StartIndex : 0;
+                    await fillCreativeFolderForConcept(conceptIdx, targets[conceptIdx], startIdx, logP, postBatch);
                   }),
                 );
               })();
               edgeRuntimeWaitUntil(work);
             }
-            console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × 3 batches = 10 images each`);
+            console.log(
+              `[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives: ${concepts.length} concepts, target ${CREATIVE_IMAGE_MIN}–${CREATIVE_IMAGE_CAP} images each (min ${CREATIVE_IMAGE_MIN})`,
+            );
             if (creativesError) {
               results.push({
                 spaceId: space.id,

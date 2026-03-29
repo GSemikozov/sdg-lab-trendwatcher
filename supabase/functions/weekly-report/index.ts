@@ -405,6 +405,80 @@ async function sendEmail(
   }
 }
 
+// --- Creative images on Drive: random target 10–15 per concept, at least 10, cap 15 files ---
+
+const CREATIVE_IMAGE_CAP = 15;
+const CREATIVE_IMAGE_MIN = 10;
+
+function randomCreativeTarget(): number {
+  return CREATIVE_IMAGE_MIN + Math.floor(Math.random() * 6);
+}
+
+async function fillCreativeFolderForConcept(
+  conceptIdx: number,
+  target: number,
+  initialFileIndex: number,
+  logPrefix: string,
+  postBatch: (conceptIdx: number, offset: number, count: number) => Promise<Response>,
+): Promise<void> {
+  let idx = initialFileIndex;
+  let stagnant = 0;
+  const maxRounds = 40;
+
+  const runPhase = async (cond: (fileIndex: number) => boolean) => {
+    let rounds = 0;
+    stagnant = 0;
+    while (cond(idx) && idx < CREATIVE_IMAGE_CAP && rounds < maxRounds) {
+      rounds++;
+      const attempts = Math.min(5, CREATIVE_IMAGE_CAP - idx);
+      if (attempts < 1) break;
+      try {
+        const res = await postBatch(conceptIdx, idx, attempts);
+        const text = await res.text();
+        if (!res.ok) {
+          console.error(`${logPrefix} concept ${conceptIdx} HTTP ${res.status}:`, text.slice(0, 500));
+          stagnant++;
+          if (stagnant >= 4) break;
+          continue;
+        }
+        let j: {
+          partial?: boolean;
+          images_uploaded?: number;
+          next_file_index?: number;
+          images_attempts?: number;
+          images_expected?: number;
+        };
+        try {
+          j = JSON.parse(text) as typeof j;
+        } catch {
+          stagnant++;
+          if (stagnant >= 4) break;
+          continue;
+        }
+        const added = j.images_uploaded ?? 0;
+        idx = typeof j.next_file_index === 'number' ? j.next_file_index : idx + added;
+        if (j.partial) {
+          const exp = j.images_attempts ?? j.images_expected;
+          console.warn(`${logPrefix} concept ${conceptIdx} partial: ${j.images_uploaded}/${exp}`);
+        }
+        if (added === 0) {
+          stagnant++;
+          if (stagnant >= 4) break;
+        } else {
+          stagnant = 0;
+        }
+      } catch (e) {
+        console.error(`${logPrefix} concept ${conceptIdx}:`, e);
+        stagnant++;
+        if (stagnant >= 4) break;
+      }
+    }
+  };
+
+  await runPhase((cur) => cur < target);
+  await runPhase((cur) => cur < CREATIVE_IMAGE_MIN);
+}
+
 // --- Process one space ---
 
 async function processSpace(
@@ -653,61 +727,41 @@ async function processSpace(
       console.error(`[weekly-report:${space.name}] create folders failed:`, folderErr);
     }
     const promptTemplate = space.creative_prompt_template ?? '';
-    const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]];
+    const targets = concepts.map(() => randomCreativeTarget());
     const logP = `[weekly-report:${space.name}]`;
-    const bodyFor = (i: number, offset: number, count: number) =>
-      JSON.stringify({
-        space_id: space.id,
-        space_name: space.name,
-        period_start: periodStart,
-        concept_index: i,
-        concepts,
-        image_offset: offset,
-        image_count: count,
-        creative_prompt_template: promptTemplate,
-        ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
-        ...(conceptFolderIds[i] ? { concept_folder_id: conceptFolderIds[i] } : {}),
+    const postBatch = (i: number, offset: number, count: number) =>
+      fetch(genUrl, {
+        method: 'POST',
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${fnAuthKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          space_id: space.id,
+          space_name: space.name,
+          period_start: periodStart,
+          concept_index: i,
+          concepts,
+          image_offset: offset,
+          image_count: count,
+          creative_prompt_template: promptTemplate,
+          ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
+          ...(conceptFolderIds[i] ? { concept_folder_id: conceptFolderIds[i] } : {}),
+        }),
       });
 
     const work = (async () => {
       await Promise.all(
-        concepts.map(async (_, conceptIdx) => {
-          for (let b = 0; b < BATCHES.length; b++) {
-            const [offset, count] = BATCHES[b];
-            try {
-              const res = await fetch(genUrl, {
-                method: 'POST',
-                headers: {
-                  apikey: supabaseKey,
-                  Authorization: `Bearer ${fnAuthKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: bodyFor(conceptIdx, offset, count),
-              });
-              const text = await res.text();
-              if (!res.ok) {
-                console.error(`${logP} concept ${conceptIdx} batch ${b} HTTP ${res.status}:`, text.slice(0, 500));
-              } else {
-                try {
-                  const j = JSON.parse(text) as { partial?: boolean; images_uploaded?: number; images_expected?: number };
-                  if (j.partial) {
-                    console.warn(
-                      `${logP} concept ${conceptIdx} batch ${b} partial: ${j.images_uploaded}/${j.images_expected}`,
-                    );
-                  }
-                } catch {
-                  /* ignore */
-                }
-              }
-            } catch (e) {
-              console.error(`${logP} concept ${conceptIdx} batch ${b}:`, e);
-            }
-          }
-        }),
+        concepts.map((_, conceptIdx) =>
+          fillCreativeFolderForConcept(conceptIdx, targets[conceptIdx], 0, logP, postBatch),
+        ),
       );
     })();
     edgeRuntimeWaitUntil(work);
-    console.log(`[weekly-report:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × 3 batches = 10 images each`);
+    console.log(
+      `[weekly-report:${space.name}] Triggered generate-creatives: ${concepts.length} concepts, target ${CREATIVE_IMAGE_MIN}–${CREATIVE_IMAGE_CAP} images each (min ${CREATIVE_IMAGE_MIN})`,
+    );
   }
 
   return { spaceId: space.id, spaceName: space.name, success: true };

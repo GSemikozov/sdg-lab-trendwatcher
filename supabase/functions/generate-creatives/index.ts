@@ -401,7 +401,9 @@ Deno.serve(async (req) => {
     const conceptFolderId = conceptFolderIdProvided
       ? body.concept_folder_id!
       : await findOrCreateFolder(accessToken, dateFolderId, concept.title);
-    console.log(`[generate-creatives] ${spaceName} / ${periodStart} / concept ${conceptIndex} (${concept.title}): images ${offset + 1}-${offset + count}`);
+    console.log(
+      `[generate-creatives] ${spaceName} / ${periodStart} / concept ${conceptIndex} (${concept.title}): up to ${count} attempts from slot ${offset}`,
+    );
 
     // Generate a DALL-E prompt for this concept (LLM from template, or fallback)
     let dallePrompt: string;
@@ -418,10 +420,11 @@ Deno.serve(async (req) => {
     const baseName = concept.title.replace(/[/\\?*:|"<>]/g, '-').slice(0, 50);
     const uploaded: string[] = [];
 
-    for (let i = 0; i < count; i++) {
-      if (i > 0) await sleep(450);
-      const imgIndex = offset + i;
-      const fileName = `${baseName}_${imgIndex + 1}`;
+    // `offset` = number of files already saved for this concept (0-based). Names are consecutive: _1, _2, …
+    let slot = offset;
+    for (let attempt = 0; attempt < count; attempt++) {
+      if (attempt > 0) await sleep(450);
+      const fileName = `${baseName}_${slot + 1}`;
       const fileId = await generateUploadOneWithRetries(
         openaiKey,
         accessToken,
@@ -431,27 +434,30 @@ Deno.serve(async (req) => {
       );
       if (fileId) {
         uploaded.push(fileId);
+        slot++;
         console.log(`[generate-creatives] Uploaded ${fileName}.png`);
       }
     }
 
-    const expected = count;
+    const attempts = count;
     const got = uploaded.length;
-    if (got < expected) {
-      console.warn(`[generate-creatives] Partial batch: ${got}/${expected} images for concept ${conceptIndex}`);
+    if (got < attempts) {
+      console.warn(`[generate-creatives] Partial batch: ${got}/${attempts} successes for concept ${conceptIndex}`);
     }
 
     const status = got > 0 ? 200 : 500;
     return new Response(
       JSON.stringify({
-        success: got === expected,
-        partial: got > 0 && got < expected,
+        success: got === attempts,
+        partial: got > 0 && got < attempts,
         space_name: spaceName,
         period_start: periodStart,
         concept_index: conceptIndex,
         concept_title: concept.title,
         images_uploaded: got,
-        images_expected: expected,
+        images_attempts: attempts,
+        images_expected: attempts,
+        next_file_index: slot,
         folder_id: conceptFolderId,
       }),
       { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
