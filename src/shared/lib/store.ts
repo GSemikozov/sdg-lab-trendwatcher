@@ -4,7 +4,7 @@ import {
   loadSpaces,
   reportStorage,
 } from '@shared/api';
-import { supabase } from '@shared/api/supabase';
+import { edgeFunctionInvokeHeaders, supabase } from '@shared/api/supabase';
 import type { Report, Space } from '@shared/lib/types';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
@@ -42,7 +42,10 @@ async function invokeEdgeFunction(body: Record<string, unknown>): Promise<Record
     return data;
   }
 
-  const { data, error } = await supabase.functions.invoke('daily-report', { body });
+  const { data, error } = await supabase.functions.invoke('daily-report', {
+    body,
+    headers: edgeFunctionInvokeHeaders(),
+  });
   if (error) throw new Error(error.message || 'Edge Function call failed');
   return data;
 }

@@ -8,3 +8,18 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
+
+/**
+ * Edge Functions HTTP gateway expects a legacy JWT (eyJ...) in Authorization + apikey.
+ * `sb_publishable_*` keys work for PostgREST but return 401 on functions.invoke.
+ * Set VITE_SUPABASE_ANON_JWT to the legacy anon key from Dashboard → API when using a publishable key.
+ */
+export function edgeFunctionInvokeHeaders(): Record<string, string> {
+  const key =
+    (import.meta.env.VITE_SUPABASE_ANON_JWT as string | undefined)?.trim() ||
+    (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim();
+  return {
+    Authorization: `Bearer ${key}`,
+    apikey: key,
+  };
+}
