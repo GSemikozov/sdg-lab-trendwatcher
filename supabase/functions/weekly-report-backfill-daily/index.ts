@@ -30,34 +30,11 @@ type EdgeGlobal = typeof globalThis & {
   EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
 };
 
-/** Without this, the isolate exits when the HTTP response is sent and unawaited fetch()s to generate-creatives are aborted. */
-function waitUntilCreativeBatchesDone(tasks: Promise<Response>[], logPrefix: string): void {
-  if (tasks.length === 0) return;
-  const work = Promise.allSettled(
-    tasks.map((p) =>
-      p.then(async (res) => {
-        const text = await res.text().catch(() => '');
-        return { ok: res.ok, status: res.status, text };
-      }),
-    ),
-  ).then((results) => {
-    results.forEach((r, idx) => {
-      if (r.status === 'rejected') {
-        console.error(`${logPrefix} generate-creatives batch ${idx} rejected:`, r.reason);
-      } else if (!r.value.ok) {
-        console.error(
-          `${logPrefix} generate-creatives batch ${idx} HTTP ${r.value.status}:`,
-          r.value.text.slice(0, 500),
-        );
-      }
-    });
-  });
+/** Keep isolate alive until background work finishes (see Supabase background tasks). */
+function edgeRuntimeWaitUntil(promise: Promise<unknown>): void {
   const eg = globalThis as EdgeGlobal;
-  if (eg.EdgeRuntime?.waitUntil) {
-    eg.EdgeRuntime.waitUntil(work);
-  } else {
-    void work;
-  }
+  if (eg.EdgeRuntime?.waitUntil) eg.EdgeRuntime.waitUntil(promise);
+  else void promise;
 }
 
 type PeriodType = 'week' | 'month';
@@ -613,30 +590,27 @@ serve(async (req) => {
               ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
               ...(conceptFolderIds[conceptIdx] ? { concept_folder_id: conceptFolderIds[conceptIdx] } : {}),
             });
-            // 10 images per concept = 3 batches of 4,3,3 (avoids CPU time limit per invocation)
+            // 10 images per concept = 3 batches of 4,3,3. Run batches sequentially per concept
+            // (fewer parallel DALL-E calls → fewer 429s). Concepts still run in parallel.
             const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]];
-            const batchTasks: Promise<Response>[] = [];
-            for (let i = 0; i < concepts.length; i++) {
-              for (let b = 0; b < BATCHES.length; b++) {
-                const [offset, count] = BATCHES[b];
-                batchTasks.push(
-                  fetch(genUrl, {
-                    method: 'POST',
-                    headers: {
-                      apikey: supabaseKey,
-                      Authorization: `Bearer ${fnAuthKey}`,
-                      'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(payload(i, offset, count)),
-                  }),
-                );
-              }
-            }
+            const logP = `[weekly-report-backfill-daily:${space.name}]`;
+
+            const postBatch = (conceptIdx: number, offset: number, count: number) =>
+              fetch(genUrl, {
+                method: 'POST',
+                headers: {
+                  apikey: supabaseKey,
+                  Authorization: `Bearer ${fnAuthKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload(conceptIdx, offset, count)),
+              });
 
             let creativesError: string | undefined;
-            if (batchTasks.length > 0) {
+            if (concepts.length > 0) {
               try {
-                const firstRes = await batchTasks[0];
+                const [o0, c0] = BATCHES[0];
+                const firstRes = await postBatch(0, o0, c0);
                 const firstBody = await firstRes.text();
                 if (!firstRes.ok) {
                   let errMsg = firstBody;
@@ -647,19 +621,44 @@ serve(async (req) => {
                     errMsg = firstBody.slice(0, 200);
                   }
                   creativesError = errMsg;
-                  console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives failed:`, creativesError);
+                  console.error(`${logP} generate-creatives failed:`, creativesError);
                 }
               } catch (firstErr) {
                 creativesError = firstErr instanceof Error ? firstErr.message : String(firstErr);
-                console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives 0 error:`, firstErr);
+                console.error(`${logP} generate-creatives 0 error:`, firstErr);
               }
-              const rest = batchTasks.slice(1);
-              if (rest.length > 0) {
-                waitUntilCreativeBatchesDone(
-                  rest,
-                  `[weekly-report-backfill-daily:${space.name}]`,
+
+              const work = (async () => {
+                await Promise.all(
+                  concepts.map(async (_, conceptIdx) => {
+                    for (let b = 0; b < BATCHES.length; b++) {
+                      if (conceptIdx === 0 && b === 0) continue;
+                      const [offset, count] = BATCHES[b];
+                      try {
+                        const res = await postBatch(conceptIdx, offset, count);
+                        const text = await res.text();
+                        if (!res.ok) {
+                          console.error(`${logP} concept ${conceptIdx} batch ${b} HTTP ${res.status}:`, text.slice(0, 500));
+                        } else {
+                          try {
+                            const j = JSON.parse(text) as { partial?: boolean; images_uploaded?: number; images_expected?: number };
+                            if (j.partial) {
+                              console.warn(
+                                `${logP} concept ${conceptIdx} batch ${b} partial: ${j.images_uploaded}/${j.images_expected}`,
+                              );
+                            }
+                          } catch {
+                            /* ignore */
+                          }
+                        }
+                      } catch (e) {
+                        console.error(`${logP} concept ${conceptIdx} batch ${b}:`, e);
+                      }
+                    }
+                  }),
                 );
-              }
+              })();
+              edgeRuntimeWaitUntil(work);
             }
             console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × 3 batches = 10 images each`);
             if (creativesError) {

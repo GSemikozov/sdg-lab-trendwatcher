@@ -22,33 +22,10 @@ type EdgeGlobal = typeof globalThis & {
   EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
 };
 
-function waitUntilCreativeBatchesDone(tasks: Promise<Response>[], logPrefix: string): void {
-  if (tasks.length === 0) return;
-  const work = Promise.allSettled(
-    tasks.map((p) =>
-      p.then(async (res) => {
-        const text = await res.text().catch(() => '');
-        return { ok: res.ok, status: res.status, text };
-      }),
-    ),
-  ).then((results) => {
-    results.forEach((r, idx) => {
-      if (r.status === 'rejected') {
-        console.error(`${logPrefix} generate-creatives batch ${idx} rejected:`, r.reason);
-      } else if (!r.value.ok) {
-        console.error(
-          `${logPrefix} generate-creatives batch ${idx} HTTP ${r.value.status}:`,
-          r.value.text.slice(0, 500),
-        );
-      }
-    });
-  });
+function edgeRuntimeWaitUntil(promise: Promise<unknown>): void {
   const eg = globalThis as EdgeGlobal;
-  if (eg.EdgeRuntime?.waitUntil) {
-    eg.EdgeRuntime.waitUntil(work);
-  } else {
-    void work;
-  }
+  if (eg.EdgeRuntime?.waitUntil) eg.EdgeRuntime.waitUntil(promise);
+  else void promise;
 }
 
 interface SpaceConfig {
@@ -676,38 +653,60 @@ async function processSpace(
       console.error(`[weekly-report:${space.name}] create folders failed:`, folderErr);
     }
     const promptTemplate = space.creative_prompt_template ?? '';
-    const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]]; // 10 images in 3 batches
-    const creativeTasks: Promise<Response>[] = [];
-    for (let i = 0; i < concepts.length; i++) {
-      for (let b = 0; b < BATCHES.length; b++) {
-        const [offset, count] = BATCHES[b];
-        creativeTasks.push(
-          fetch(genUrl, {
-            method: 'POST',
-            headers: {
-              apikey: supabaseKey,
-              Authorization: `Bearer ${fnAuthKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              space_id: space.id,
-              space_name: space.name,
-              period_start: periodStart,
-              concept_index: i,
-              concepts,
-              image_offset: offset,
-              image_count: count,
-              creative_prompt_template: promptTemplate,
-              ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
-              ...(conceptFolderIds[i] ? { concept_folder_id: conceptFolderIds[i] } : {}),
-            }),
-          }),
-        );
-      }
-    }
-    if (creativeTasks.length > 0) {
-      waitUntilCreativeBatchesDone(creativeTasks, `[weekly-report:${space.name}]`);
-    }
+    const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]];
+    const logP = `[weekly-report:${space.name}]`;
+    const bodyFor = (i: number, offset: number, count: number) =>
+      JSON.stringify({
+        space_id: space.id,
+        space_name: space.name,
+        period_start: periodStart,
+        concept_index: i,
+        concepts,
+        image_offset: offset,
+        image_count: count,
+        creative_prompt_template: promptTemplate,
+        ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
+        ...(conceptFolderIds[i] ? { concept_folder_id: conceptFolderIds[i] } : {}),
+      });
+
+    const work = (async () => {
+      await Promise.all(
+        concepts.map(async (_, conceptIdx) => {
+          for (let b = 0; b < BATCHES.length; b++) {
+            const [offset, count] = BATCHES[b];
+            try {
+              const res = await fetch(genUrl, {
+                method: 'POST',
+                headers: {
+                  apikey: supabaseKey,
+                  Authorization: `Bearer ${fnAuthKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: bodyFor(conceptIdx, offset, count),
+              });
+              const text = await res.text();
+              if (!res.ok) {
+                console.error(`${logP} concept ${conceptIdx} batch ${b} HTTP ${res.status}:`, text.slice(0, 500));
+              } else {
+                try {
+                  const j = JSON.parse(text) as { partial?: boolean; images_uploaded?: number; images_expected?: number };
+                  if (j.partial) {
+                    console.warn(
+                      `${logP} concept ${conceptIdx} batch ${b} partial: ${j.images_uploaded}/${j.images_expected}`,
+                    );
+                  }
+                } catch {
+                  /* ignore */
+                }
+              }
+            } catch (e) {
+              console.error(`${logP} concept ${conceptIdx} batch ${b}:`, e);
+            }
+          }
+        }),
+      );
+    })();
+    edgeRuntimeWaitUntil(work);
     console.log(`[weekly-report:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × 3 batches = 10 images each`);
   }
 

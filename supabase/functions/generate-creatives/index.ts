@@ -238,6 +238,33 @@ async function generateImage(
   return data.data[0].b64_json;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** One image: retry DALL-E + Drive on transient failures (rate limits, timeouts). */
+async function generateUploadOneWithRetries(
+  openaiKey: string,
+  accessToken: string,
+  conceptFolderId: string,
+  fileName: string,
+  dallePrompt: string,
+  maxAttempts = 3,
+): Promise<string | null> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const b64 = await generateImage(openaiKey, dallePrompt);
+      const fileId = await uploadToDrive(accessToken, conceptFolderId, fileName, b64);
+      return fileId;
+    } catch (e) {
+      const msg = toFriendlyError(e);
+      console.error(`[generate-creatives] ${fileName} attempt ${attempt}/${maxAttempts}: ${msg}`);
+      if (attempt < maxAttempts) await sleep(600 * attempt);
+    }
+  }
+  return null;
+}
+
 // --- Handler ---
 
 Deno.serve(async (req) => {
@@ -392,25 +419,42 @@ Deno.serve(async (req) => {
     const uploaded: string[] = [];
 
     for (let i = 0; i < count; i++) {
+      if (i > 0) await sleep(450);
       const imgIndex = offset + i;
-      const b64 = await generateImage(openaiKey, dallePrompt);
       const fileName = `${baseName}_${imgIndex + 1}`;
-      const fileId = await uploadToDrive(accessToken, conceptFolderId, fileName, b64);
-      uploaded.push(fileId);
-      console.log(`[generate-creatives] Uploaded ${fileName}.png`);
+      const fileId = await generateUploadOneWithRetries(
+        openaiKey,
+        accessToken,
+        conceptFolderId,
+        fileName,
+        dallePrompt,
+      );
+      if (fileId) {
+        uploaded.push(fileId);
+        console.log(`[generate-creatives] Uploaded ${fileName}.png`);
+      }
     }
 
+    const expected = count;
+    const got = uploaded.length;
+    if (got < expected) {
+      console.warn(`[generate-creatives] Partial batch: ${got}/${expected} images for concept ${conceptIndex}`);
+    }
+
+    const status = got > 0 ? 200 : 500;
     return new Response(
       JSON.stringify({
-        success: true,
+        success: got === expected,
+        partial: got > 0 && got < expected,
         space_name: spaceName,
         period_start: periodStart,
         concept_index: conceptIndex,
         concept_title: concept.title,
-        images_uploaded: uploaded.length,
+        images_uploaded: got,
+        images_expected: expected,
         folder_id: conceptFolderId,
       }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   } catch (err) {
     console.error('[generate-creatives] Error:', err);
