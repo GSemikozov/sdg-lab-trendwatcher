@@ -26,6 +26,40 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+type EdgeGlobal = typeof globalThis & {
+  EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
+};
+
+/** Without this, the isolate exits when the HTTP response is sent and unawaited fetch()s to generate-creatives are aborted. */
+function waitUntilCreativeBatchesDone(tasks: Promise<Response>[], logPrefix: string): void {
+  if (tasks.length === 0) return;
+  const work = Promise.allSettled(
+    tasks.map((p) =>
+      p.then(async (res) => {
+        const text = await res.text().catch(() => '');
+        return { ok: res.ok, status: res.status, text };
+      }),
+    ),
+  ).then((results) => {
+    results.forEach((r, idx) => {
+      if (r.status === 'rejected') {
+        console.error(`${logPrefix} generate-creatives batch ${idx} rejected:`, r.reason);
+      } else if (!r.value.ok) {
+        console.error(
+          `${logPrefix} generate-creatives batch ${idx} HTTP ${r.value.status}:`,
+          r.value.text.slice(0, 500),
+        );
+      }
+    });
+  });
+  const eg = globalThis as EdgeGlobal;
+  if (eg.EdgeRuntime?.waitUntil) {
+    eg.EdgeRuntime.waitUntil(work);
+  } else {
+    void work;
+  }
+}
+
 type PeriodType = 'week' | 'month';
 
 interface SpaceConfig {
@@ -579,49 +613,52 @@ serve(async (req) => {
               ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
               ...(conceptFolderIds[conceptIdx] ? { concept_folder_id: conceptFolderIds[conceptIdx] } : {}),
             });
-            // 10 images per concept = 3 batches of 4,3,3 (avoids CPU time limit)
+            // 10 images per concept = 3 batches of 4,3,3 (avoids CPU time limit per invocation)
             const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]];
-            let creativesError: string | undefined;
-            try {
-              const [firstOffset, firstCount] = BATCHES[0];
-              const firstRes = await fetch(genUrl, {
-                method: 'POST',
-                headers: {
-                  apikey: supabaseKey,
-                  Authorization: `Bearer ${fnAuthKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload(0, firstOffset, firstCount)),
-              });
-              const firstBody = await firstRes.text();
-              if (!firstRes.ok) {
-                let errMsg = firstBody;
-                try {
-                  const parsed = JSON.parse(firstBody) as { error?: string };
-                  if (parsed?.error) errMsg = parsed.error;
-                } catch {
-                  errMsg = firstBody.slice(0, 200);
-                }
-                creativesError = errMsg;
-                console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives failed:`, creativesError);
-              }
-            } catch (firstErr) {
-              creativesError = firstErr instanceof Error ? firstErr.message : String(firstErr);
-              console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives 0 error:`, firstErr);
-            }
+            const batchTasks: Promise<Response>[] = [];
             for (let i = 0; i < concepts.length; i++) {
               for (let b = 0; b < BATCHES.length; b++) {
-                if (i === 0 && b === 0) continue; // already awaited
                 const [offset, count] = BATCHES[b];
-                fetch(genUrl, {
-                  method: 'POST',
-                  headers: {
-                    apikey: supabaseKey,
-                    Authorization: `Bearer ${fnAuthKey}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify(payload(i, offset, count)),
-                }).catch((err) => console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives ${i} batch ${b} failed:`, err));
+                batchTasks.push(
+                  fetch(genUrl, {
+                    method: 'POST',
+                    headers: {
+                      apikey: supabaseKey,
+                      Authorization: `Bearer ${fnAuthKey}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload(i, offset, count)),
+                  }),
+                );
+              }
+            }
+
+            let creativesError: string | undefined;
+            if (batchTasks.length > 0) {
+              try {
+                const firstRes = await batchTasks[0];
+                const firstBody = await firstRes.text();
+                if (!firstRes.ok) {
+                  let errMsg = firstBody;
+                  try {
+                    const parsed = JSON.parse(firstBody) as { error?: string };
+                    if (parsed?.error) errMsg = parsed.error;
+                  } catch {
+                    errMsg = firstBody.slice(0, 200);
+                  }
+                  creativesError = errMsg;
+                  console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives failed:`, creativesError);
+                }
+              } catch (firstErr) {
+                creativesError = firstErr instanceof Error ? firstErr.message : String(firstErr);
+                console.error(`[weekly-report-backfill-daily:${space.name}] generate-creatives 0 error:`, firstErr);
+              }
+              const rest = batchTasks.slice(1);
+              if (rest.length > 0) {
+                waitUntilCreativeBatchesDone(
+                  rest,
+                  `[weekly-report-backfill-daily:${space.name}]`,
+                );
               }
             }
             console.log(`[weekly-report-backfill-daily:${space.name}] Triggered generate-creatives: ${concepts.length} concepts × 3 batches = 10 images each`);
