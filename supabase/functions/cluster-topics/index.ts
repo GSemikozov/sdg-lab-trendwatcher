@@ -245,12 +245,26 @@ serve(async (req) => {
       );
     }
 
+    // PostgREST returns pgvector columns as strings like "[0.1,0.2,...]"
+    function parseEmbedding(raw: unknown): number[] | null {
+      if (Array.isArray(raw)) return raw.length > 0 ? raw : null;
+      if (typeof raw === 'string') {
+        try {
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+
     const inputs: ClusterInput[] = rows
-      .filter((r) => Array.isArray(r.embedding) && r.embedding.length > 0)
-      .map((r) => ({
-        vector: r.embedding,
-        payload: r,
-      }));
+      .map((r) => {
+        const vec = parseEmbedding(r.embedding);
+        return vec ? { vector: vec, payload: { ...r, embedding: vec } } : null;
+      })
+      .filter((x): x is ClusterInput => x !== null);
 
     if (inputs.length === 0) {
       return new Response(

@@ -406,6 +406,7 @@ async function processSpace(
   senderEmail: string,
   supabaseUrl: string,
   supabaseKey: string,
+  fnAuthKey: string,
 ): Promise<{ spaceId: string; spaceName: string; success: boolean; error?: string }> {
   console.log(
     `[weekly-report:${space.name}] ${periodType} ${periodStart}..${periodEnd}`,
@@ -433,7 +434,7 @@ async function processSpace(
       method: 'POST',
       headers: {
         apikey: supabaseKey,
-        Authorization: `Bearer ${supabaseKey}`,
+        Authorization: `Bearer ${fnAuthKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -603,7 +604,7 @@ async function processSpace(
         method: 'POST',
         headers: {
           apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
+          Authorization: `Bearer ${fnAuthKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -621,7 +622,7 @@ async function processSpace(
           method: 'POST',
           headers: {
             apikey: supabaseKey,
-            Authorization: `Bearer ${supabaseKey}`,
+            Authorization: `Bearer ${fnAuthKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -649,7 +650,7 @@ async function processSpace(
           method: 'POST',
           headers: {
             apikey: supabaseKey,
-            Authorization: `Bearer ${supabaseKey}`,
+            Authorization: `Bearer ${fnAuthKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -686,6 +687,8 @@ Deno.serve(async (req) => {
     const senderEmail = Deno.env.get('EMAIL_SENDER') ?? 'trendwatcher@sdglab.dev';
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    // Legacy JWT key for Edge Function-to-Edge Function calls (gateway rejects sb_secret_* format)
+    const fnAuthKey = Deno.env.get('SERVICE_ROLE_JWT') ?? supabaseKey;
 
     if (!openaiKey || !supabaseUrl || !supabaseKey) {
       return new Response(
@@ -758,6 +761,7 @@ Deno.serve(async (req) => {
           senderEmail,
           supabaseUrl,
           supabaseKey,
+          fnAuthKey,
         );
         results.push(result);
       } catch (err) {

@@ -517,6 +517,7 @@ serve(async (req) => {
         if (concepts.length > 0) {
           const supabaseUrl = Deno.env.get('SUPABASE_URL');
           const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+          const fnAuthKey = Deno.env.get('SERVICE_ROLE_JWT') ?? supabaseKey;
           if (supabaseUrl && supabaseKey) {
             const genUrl = `${supabaseUrl}/functions/v1/generate-creatives`;
             // Create date + concept folders once to avoid race (duplicate "Late-Night Connection" etc)
@@ -527,7 +528,7 @@ serve(async (req) => {
                 method: 'POST',
                 headers: {
                   apikey: supabaseKey,
-                  Authorization: `Bearer ${supabaseKey}`,
+                  Authorization: `Bearer ${fnAuthKey}`,
                   'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
@@ -545,7 +546,7 @@ serve(async (req) => {
                   method: 'POST',
                   headers: {
                     apikey: supabaseKey,
-                    Authorization: `Bearer ${supabaseKey}`,
+                    Authorization: `Bearer ${fnAuthKey}`,
                     'Content-Type': 'application/json',
                   },
                   body: JSON.stringify({
@@ -586,7 +587,7 @@ serve(async (req) => {
                 method: 'POST',
                 headers: {
                   apikey: supabaseKey,
-                  Authorization: `Bearer ${supabaseKey}`,
+                  Authorization: `Bearer ${fnAuthKey}`,
                   'Content-Type': 'application/json',
                 },
                 body: JSON.stringify(payload(0, firstOffset, firstCount)),
@@ -615,7 +616,7 @@ serve(async (req) => {
                   method: 'POST',
                   headers: {
                     apikey: supabaseKey,
-                    Authorization: `Bearer ${supabaseKey}`,
+                    Authorization: `Bearer ${fnAuthKey}`,
                     'Content-Type': 'application/json',
                   },
                   body: JSON.stringify(payload(i, offset, count)),
