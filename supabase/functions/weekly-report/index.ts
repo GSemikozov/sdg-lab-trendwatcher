@@ -23,6 +23,7 @@ interface SpaceConfig {
   name: string;
   domain_prompt: string;
   creative_image_prompt?: string;
+  creative_prompt_template?: string;
   subreddits: string[];
   email_recipients: string[];
 }
@@ -641,7 +642,7 @@ async function processSpace(
     } catch (folderErr) {
       console.error(`[weekly-report:${space.name}] create folders failed:`, folderErr);
     }
-    const creativePrompt = space.creative_image_prompt ?? '';
+    const promptTemplate = space.creative_prompt_template ?? '';
     const BATCHES: [number, number][] = [[0, 4], [4, 3], [7, 3]]; // 10 images in 3 batches
     for (let i = 0; i < concepts.length; i++) {
       for (let b = 0; b < BATCHES.length; b++) {
@@ -661,7 +662,7 @@ async function processSpace(
             concepts,
             image_offset: offset,
             image_count: count,
-            creative_image_prompt: creativePrompt,
+            creative_prompt_template: promptTemplate,
             ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
             ...(conceptFolderIds[i] ? { concept_folder_id: conceptFolderIds[i] } : {}),
           }),
@@ -720,7 +721,7 @@ Deno.serve(async (req) => {
       const res = await supaFetch(
         supabaseUrl,
         supabaseKey,
-        `spaces?id=eq.${requestSpaceId}&select=id,name,domain_prompt,creative_image_prompt,subreddits,email_recipients`,
+        `spaces?id=eq.${requestSpaceId}&select=id,name,domain_prompt,creative_image_prompt,creative_prompt_template,subreddits,email_recipients`,
       );
       if (res.ok) {
         const rows = await res.json();
@@ -730,7 +731,7 @@ Deno.serve(async (req) => {
       const res = await supaFetch(
         supabaseUrl,
         supabaseKey,
-        'spaces?is_active=eq.true&select=id,name,domain_prompt,creative_image_prompt,subreddits,email_recipients&order=created_at.asc',
+        'spaces?is_active=eq.true&select=id,name,domain_prompt,creative_image_prompt,creative_prompt_template,subreddits,email_recipients&order=created_at.asc',
       );
       if (res.ok) {
         spacesToProcess.push(...((await res.json()) as SpaceConfig[]));

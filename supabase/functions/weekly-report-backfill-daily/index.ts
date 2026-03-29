@@ -33,6 +33,7 @@ interface SpaceConfig {
   name: string;
   domain_prompt: string;
   creative_image_prompt?: string;
+  creative_prompt_template?: string;
   email_recipients: string[];
 }
 
@@ -310,7 +311,7 @@ async function sendEmail(args: {
 
 async function loadActiveSpaces(supabaseUrl: string, supabaseKey: string): Promise<SpaceConfig[]> {
   const res = await fetch(
-    `${supabaseUrl}/rest/v1/spaces?is_active=eq.true&select=id,name,domain_prompt,creative_image_prompt,subreddits,email_recipients`,
+    `${supabaseUrl}/rest/v1/spaces?is_active=eq.true&select=id,name,domain_prompt,creative_image_prompt,creative_prompt_template,subreddits,email_recipients`,
     { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } },
   );
   if (!res.ok) return [];
@@ -357,7 +358,7 @@ serve(async (req) => {
     const spaces: SpaceConfig[] = [];
     if (requestSpaceId) {
       const res = await fetch(
-        `${supabaseUrl}/rest/v1/spaces?id=eq.${requestSpaceId}&select=id,name,domain_prompt,creative_image_prompt,subreddits,email_recipients`,
+        `${supabaseUrl}/rest/v1/spaces?id=eq.${requestSpaceId}&select=id,name,domain_prompt,creative_image_prompt,creative_prompt_template,subreddits,email_recipients`,
         { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } },
       );
       if (res.ok) {
@@ -565,7 +566,7 @@ serve(async (req) => {
             } catch (folderErr) {
               console.error(`[weekly-report-backfill-daily:${space.name}] create folders failed:`, folderErr);
             }
-            const creativePrompt = space.creative_image_prompt ?? '';
+            const promptTemplate = space.creative_prompt_template ?? '';
             const payload = (conceptIdx: number, imageOffset: number, imageCount: number) => ({
               space_id: space.id,
               space_name: space.name,
@@ -574,7 +575,7 @@ serve(async (req) => {
               concepts,
               image_offset: imageOffset,
               image_count: imageCount,
-              creative_image_prompt: creativePrompt,
+              creative_prompt_template: promptTemplate,
               ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
               ...(conceptFolderIds[conceptIdx] ? { concept_folder_id: conceptFolderIds[conceptIdx] } : {}),
             });

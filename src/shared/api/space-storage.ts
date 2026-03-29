@@ -7,7 +7,7 @@ interface SpaceRow {
   slug: string;
   description: string;
   domain_prompt: string;
-  creative_image_prompt?: string;
+  creative_prompt_template?: string;
   subreddits: string[];
   email_recipients: string[];
   is_active: boolean;
@@ -22,7 +22,7 @@ function rowToSpace(row: SpaceRow): Space {
     slug: row.slug,
     description: row.description,
     domainPrompt: row.domain_prompt,
-    creativeImagePrompt: row.creative_image_prompt ?? '',
+    creativePromptTemplate: row.creative_prompt_template ?? '',
     subreddits: row.subreddits,
     emailRecipients: row.email_recipients,
     isActive: row.is_active,
@@ -37,7 +37,7 @@ function spaceToRow(space: Partial<Space>) {
   if (space.slug !== undefined) row.slug = space.slug;
   if (space.description !== undefined) row.description = space.description;
   if (space.domainPrompt !== undefined) row.domain_prompt = space.domainPrompt;
-  if (space.creativeImagePrompt !== undefined) row.creative_image_prompt = space.creativeImagePrompt;
+  if (space.creativePromptTemplate !== undefined) row.creative_prompt_template = space.creativePromptTemplate;
   if (space.subreddits !== undefined) row.subreddits = space.subreddits;
   if (space.emailRecipients !== undefined) row.email_recipients = space.emailRecipients;
   if (space.isActive !== undefined) row.is_active = space.isActive;

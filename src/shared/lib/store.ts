@@ -170,8 +170,8 @@ export const useAppStore = create<AppStore>()(
           if (updates.emailRecipients !== undefined)
             dbUpdates.emailRecipients = updates.emailRecipients;
           if (updates.domainPrompt !== undefined) dbUpdates.domainPrompt = updates.domainPrompt;
-          if (updates.creativeImagePrompt !== undefined)
-            dbUpdates.creativeImagePrompt = updates.creativeImagePrompt;
+          if (updates.creativePromptTemplate !== undefined)
+            dbUpdates.creativePromptTemplate = updates.creativePromptTemplate;
           if (updates.name !== undefined) dbUpdates.name = updates.name;
           if (updates.description !== undefined) dbUpdates.description = updates.description;
 

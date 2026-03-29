@@ -158,26 +158,63 @@ async function uploadToDrive(
   return file.id;
 }
 
-// --- DALL-E 3 ---
+// --- LLM prompt generation ---
+
+const PROMPT_GEN_SYSTEM = `You are an expert advertising creative director.
+Given a TEMPLATE (the brand's visual style and tone guide) and a specific AD CONCEPT
+(title + description from a weekly trend report), produce a single detailed DALL-E image
+generation prompt that merges the brand template style with this specific concept.
+
+Rules:
+- Output ONLY the DALL-E prompt text, nothing else (no markdown, no explanation).
+- Keep the brand's visual language, format, colors, and mood from the template.
+- Incorporate the concept's theme, emotion, and message naturally.
+- Include concrete visual details (scene, lighting, composition, text overlays if appropriate).
+- The prompt must be ≤ 950 characters (DALL-E limit is 1000).`;
 
 const DEFAULT_IMAGE_PROMPT_PREFIX =
   'Meta ad creative concept. Style: modern, high-contrast, suitable for social media feed. No legible text in the image.';
 
-function buildImagePrompt(concept: AdConcept, creativeImagePrompt?: string): string {
-  const conceptLine = `Concept title: "${concept.title}". ${concept.description}`;
-  if (creativeImagePrompt?.trim()) {
-    return `${creativeImagePrompt.trim()}\n\n${conceptLine}`;
+async function generatePromptForConcept(
+  openaiKey: string,
+  template: string,
+  concept: AdConcept,
+): Promise<string> {
+  const userMsg = `TEMPLATE:\n${template}\n\nAD CONCEPT:\nTitle: ${concept.title}\nDescription: ${concept.description}`;
+  const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${openaiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: PROMPT_GEN_SYSTEM },
+        { role: 'user', content: userMsg },
+      ],
+      max_tokens: 400,
+      temperature: 0.8,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Prompt-gen LLM error ${res.status}: ${err.slice(0, 300)}`);
   }
-  return `${DEFAULT_IMAGE_PROMPT_PREFIX}\n\n${conceptLine}`;
+  const data = (await res.json()) as { choices: { message: { content: string } }[] };
+  return (data.choices[0]?.message?.content ?? '').trim();
 }
+
+function buildFallbackPrompt(concept: AdConcept): string {
+  return `${DEFAULT_IMAGE_PROMPT_PREFIX}\n\nConcept title: "${concept.title}". ${concept.description}`;
+}
+
+// --- DALL-E 3 ---
 
 async function generateImage(
   openaiKey: string,
-  concept: AdConcept,
-  index: number,
-  creativeImagePrompt?: string,
+  prompt: string,
 ): Promise<string> {
-  const prompt = buildImagePrompt(concept, creativeImagePrompt);
   const res = await fetch(`${OPENAI_BASE}/images/generations`, {
     method: 'POST',
     headers: {
@@ -257,9 +294,11 @@ Deno.serve(async (req) => {
       concept_folder_id?: string;
       image_offset?: number;
       image_count?: number;
-      creative_image_prompt?: string;
+      creative_prompt_template?: string;
+      creative_image_prompt?: string; // legacy fallback
     };
-    const creativeImagePrompt = typeof body.creative_image_prompt === 'string' ? body.creative_image_prompt : '';
+    const promptTemplate = typeof body.creative_prompt_template === 'string' ? body.creative_prompt_template.trim() : '';
+    const legacyPrompt = typeof body.creative_image_prompt === 'string' ? body.creative_image_prompt.trim() : '';
 
     const spaceName = body.space_name;
     const periodStart = body.period_start;
@@ -337,12 +376,24 @@ Deno.serve(async (req) => {
       : await findOrCreateFolder(accessToken, dateFolderId, concept.title);
     console.log(`[generate-creatives] ${spaceName} / ${periodStart} / concept ${conceptIndex} (${concept.title}): images ${offset + 1}-${offset + count}`);
 
+    // Generate a DALL-E prompt for this concept (LLM from template, or fallback)
+    let dallePrompt: string;
+    if (promptTemplate) {
+      console.log(`[generate-creatives] Generating DALL-E prompt via LLM for "${concept.title}"…`);
+      dallePrompt = await generatePromptForConcept(openaiKey, promptTemplate, concept);
+      console.log(`[generate-creatives] LLM prompt (${dallePrompt.length} chars): ${dallePrompt.slice(0, 120)}…`);
+    } else if (legacyPrompt) {
+      dallePrompt = `${legacyPrompt}\n\nConcept title: "${concept.title}". ${concept.description}`;
+    } else {
+      dallePrompt = buildFallbackPrompt(concept);
+    }
+
     const baseName = concept.title.replace(/[/\\?*:|"<>]/g, '-').slice(0, 50);
     const uploaded: string[] = [];
 
     for (let i = 0; i < count; i++) {
       const imgIndex = offset + i;
-      const b64 = await generateImage(openaiKey, concept, imgIndex, creativeImagePrompt);
+      const b64 = await generateImage(openaiKey, dallePrompt);
       const fileName = `${baseName}_${imgIndex + 1}`;
       const fileId = await uploadToDrive(accessToken, conceptFolderId, fileName, b64);
       uploaded.push(fileId);

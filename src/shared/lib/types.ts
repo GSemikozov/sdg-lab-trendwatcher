@@ -68,8 +68,8 @@ export interface Space {
   slug: string;
   description: string;
   domainPrompt: string;
-  /** Extra instructions for DALL-E when generating ad creatives (Drive). Empty = use default. */
-  creativeImagePrompt: string;
+  /** Template used by LLM to generate a unique DALL-E prompt per ad concept. Empty = generic default. */
+  creativePromptTemplate: string;
   subreddits: string[];
   emailRecipients: string[];
   isActive: boolean;
