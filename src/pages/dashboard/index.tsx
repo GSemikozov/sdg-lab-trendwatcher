@@ -3,14 +3,14 @@ import { generateAggregateReport, loadAggregateReports } from '@shared/api';
 import { compareReports } from '@shared/lib/report-diff';
 import { useAppStore } from '@shared/lib/store';
 import type { AggregateReport, PeriodType, Report } from '@shared/lib/types';
-import { Skeleton } from '@shared/ui';
+import { Button, Skeleton } from '@shared/ui';
 import { AdConceptsSection } from '@widgets/ad-concepts';
 import { AggregateReportView } from '@widgets/aggregate-report';
 import { ReportCard } from '@widgets/report-card';
 import { ReportDiff } from '@widgets/report-diff';
 import { SignalList } from '@widgets/signal-list';
 import { TrendBoard } from '@widgets/trend-board';
-import { BarChart3, CalendarDays, CalendarRange, Layers, Loader2, Settings } from 'lucide-react';
+import { BarChart3, CalendarDays, CalendarRange, Layers, Settings } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
@@ -316,15 +316,16 @@ function DailySection({
           <h2 className="text-lg font-semibold text-foreground">Daily Reports</h2>
         </div>
         {showGenerateButton && (
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
+            loading={isGenerating}
             onClick={generateReport}
-            disabled={isGenerating}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 cursor-pointer whitespace-nowrap"
+            className="border-border bg-card text-xs font-medium text-foreground hover:bg-accent whitespace-nowrap"
           >
-            {isGenerating && <Loader2 className="h-3 w-3 animate-spin" />}
             {isGenerating ? 'Generating…' : 'Generate daily'}
-          </button>
+          </Button>
         )}
       </div>
 
@@ -403,15 +404,16 @@ function AggregateSection({
           {icon}
           <h2 className="text-lg font-semibold text-foreground">{title}</h2>
         </div>
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
+          loading={isGenerating}
           onClick={onGenerate}
-          disabled={isGenerating}
-          className="inline-flex items-center gap-2 rounded-md bg-card border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent disabled:opacity-50 cursor-pointer whitespace-nowrap"
+          className="border-border bg-card text-sm font-medium text-foreground hover:bg-accent whitespace-nowrap"
         >
-          {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          {isGenerating ? 'Generating...' : `Generate ${periodType === 'week' ? 'Weekly' : 'Monthly'}`}
-        </button>
+          {isGenerating ? 'Generating…' : `Generate ${periodType === 'week' ? 'Weekly' : 'Monthly'}`}
+        </Button>
       </div>
 
       {isLoading ? (
