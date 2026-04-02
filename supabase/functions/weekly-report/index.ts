@@ -18,16 +18,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-type EdgeGlobal = typeof globalThis & {
-  EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
-};
-
-function edgeRuntimeWaitUntil(promise: Promise<unknown>): void {
-  const eg = globalThis as EdgeGlobal;
-  if (eg.EdgeRuntime?.waitUntil) eg.EdgeRuntime.waitUntil(promise);
-  else void promise;
-}
-
 interface SpaceConfig {
   id: string;
   name: string;
@@ -405,97 +395,6 @@ async function sendEmail(
   }
 }
 
-// --- Creative images on Drive: 10 per concept via waitUntil background work ---
-
-const CREATIVE_IMAGES_PER_CONCEPT = 10;
-const CREATIVE_FILL_MAX_ROUNDS = 30;
-const CREATIVE_FILL_STAGNANT_MAX = 6;
-
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function fillCreativeFolderForConcept(
-  conceptIdx: number,
-  initialFileIndex: number,
-  logPrefix: string,
-  postBatch: (conceptIdx: number, offset: number, count: number) => Promise<Response>,
-): Promise<void> {
-  let idx = initialFileIndex;
-  let stagnant = 0;
-  let rounds = 0;
-
-  while (idx < CREATIVE_IMAGES_PER_CONCEPT && rounds < CREATIVE_FILL_MAX_ROUNDS) {
-    rounds++;
-    const attempts = Math.min(5, CREATIVE_IMAGES_PER_CONCEPT - idx);
-    if (attempts < 1) break;
-
-    try {
-      const res = await postBatch(conceptIdx, idx, attempts);
-      const text = await res.text();
-      if (!res.ok) {
-        console.error(`${logPrefix} concept ${conceptIdx} HTTP ${res.status}:`, text.slice(0, 500));
-        stagnant++;
-        await sleepMs(1000);
-        if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) {
-          console.error(
-            `${logPrefix} concept ${conceptIdx}: gave up after ${stagnant} failed batches (have ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} files)`,
-          );
-          break;
-        }
-        continue;
-      }
-
-      let j: {
-        partial?: boolean;
-        images_uploaded?: number;
-        next_file_index?: number;
-        images_attempts?: number;
-        images_expected?: number;
-      };
-      try {
-        j = JSON.parse(text) as typeof j;
-      } catch {
-        stagnant++;
-        await sleepMs(1000);
-        if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) break;
-        continue;
-      }
-
-      const added = j.images_uploaded ?? 0;
-      idx = typeof j.next_file_index === 'number' ? j.next_file_index : idx + added;
-      if (j.partial) {
-        const exp = j.images_attempts ?? j.images_expected;
-        console.warn(`${logPrefix} concept ${conceptIdx} partial: ${j.images_uploaded}/${exp}`);
-      }
-
-      if (added === 0) {
-        stagnant++;
-        await sleepMs(1000);
-        if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) {
-          console.error(
-            `${logPrefix} concept ${conceptIdx}: gave up after ${stagnant} empty batches (have ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} files)`,
-          );
-          break;
-        }
-      } else {
-        stagnant = 0;
-      }
-    } catch (e) {
-      console.error(`${logPrefix} concept ${conceptIdx}:`, e);
-      stagnant++;
-      await sleepMs(1000);
-      if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) break;
-    }
-  }
-
-  if (idx < CREATIVE_IMAGES_PER_CONCEPT) {
-    console.warn(
-      `${logPrefix} concept ${conceptIdx}: only ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} images after ${rounds} batch rounds`,
-    );
-  }
-}
-
 // --- Process one space ---
 
 async function processSpace(
@@ -695,12 +594,13 @@ async function processSpace(
     }
   }
 
-  // 8. Create Drive folders once, then fire-and-forget generate-creatives per concept (avoids duplicates)
+  // 8. Pre-create Drive folders; actual image generation is driven by the client
   const concepts = analysis.creative_concepts ?? [];
+  let dateFolderId: string | undefined;
+  let conceptFolderIds: string[] = [];
+
   if (concepts.length > 0) {
     const genUrl = `${supabaseUrl}/functions/v1/generate-creatives`;
-    let dateFolderId: string | undefined;
-    let conceptFolderIds: string[] = [];
     try {
       const folderRes = await fetch(genUrl, {
         method: 'POST',
@@ -743,48 +643,24 @@ async function processSpace(
     } catch (folderErr) {
       console.error(`[weekly-report:${space.name}] create folders failed:`, folderErr);
     }
-    const promptTemplate = space.creative_prompt_template ?? '';
-    const logP = `[weekly-report:${space.name}]`;
-    const postBatch = (i: number, offset: number, count: number) =>
-      fetch(genUrl, {
-        method: 'POST',
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${fnAuthKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+  }
+
+  return {
+    spaceId: space.id,
+    spaceName: space.name,
+    success: true,
+    creative_params: concepts.length > 0
+      ? {
           space_id: space.id,
           space_name: space.name,
           period_start: periodStart,
-          concept_index: i,
           concepts,
-          image_offset: offset,
-          image_count: count,
-          creative_prompt_template: promptTemplate,
-          ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
-          ...(conceptFolderIds[i] ? { concept_folder_id: conceptFolderIds[i] } : {}),
-        }),
-      });
-
-    const work = (async () => {
-      try {
-        await Promise.all(
-          concepts.map((_, conceptIdx) =>
-            fillCreativeFolderForConcept(conceptIdx, 0, logP, postBatch),
-          ),
-        );
-      } catch (e) {
-        console.error(`${logP} generate-creatives orchestration error:`, e);
-      }
-      console.log(
-        `[weekly-report:${space.name}] Finished generate-creatives: ${concepts.length} concepts × ${CREATIVE_IMAGES_PER_CONCEPT} target images each`,
-      );
-    })();
-    edgeRuntimeWaitUntil(work);
-  }
-
-  return { spaceId: space.id, spaceName: space.name, success: true };
+          date_folder_id: dateFolderId ?? '',
+          concept_folder_ids: conceptFolderIds,
+          creative_prompt_template: space.creative_prompt_template ?? '',
+        }
+      : undefined,
+  };
 }
 
 // --- Handler ---

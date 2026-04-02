@@ -1,5 +1,5 @@
 import { GenerateReportButton } from '@features/generate-report';
-import { generateAggregateReport, loadAggregateReports } from '@shared/api';
+import { fillCreativesFromClient, generateAggregateReport, loadAggregateReports } from '@shared/api';
 import { compareReports } from '@shared/lib/report-diff';
 import { useAppStore } from '@shared/lib/store';
 import type { AggregateReport, PeriodType, Report } from '@shared/lib/types';
@@ -41,6 +41,7 @@ export function SpaceDashboardPage() {
   const [aggError, setAggError] = useState<string | null>(null);
   const [weeklyGenerating, setWeeklyGenerating] = useState(false);
   const [monthlyGenerating, setMonthlyGenerating] = useState(false);
+  const [creativeStatus, setCreativeStatus] = useState<string | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: sync store with URL slug and load reports
   useEffect(() => {
@@ -89,17 +90,29 @@ export function SpaceDashboardPage() {
     const setGenerating = periodType === 'week' ? setWeeklyGenerating : setMonthlyGenerating;
     setGenerating(true);
     setAggError(null);
+    setCreativeStatus(null);
     try {
       const result = await generateAggregateReport(space.id, periodType);
       if (!result.success) {
         setAggError(result.error ?? 'Generation failed');
-      } else {
-        await loadAllAggReports();
+        return;
+      }
+      await loadAllAggReports();
+
+      if (result.creativeParams && result.creativeParams.concepts.length > 0) {
+        const total = result.creativeParams.concepts.length;
+        setCreativeStatus(`Creating images: concept 1/${total}…`);
+        await fillCreativesFromClient(result.creativeParams, (ci, totalC, imgs) => {
+          const done = ci + (imgs >= 10 ? 1 : 0);
+          setCreativeStatus(`Creating images: concept ${Math.min(done + 1, totalC)}/${totalC} (${imgs}/10)…`);
+        });
+        setCreativeStatus(null);
       }
     } catch (err) {
       setAggError(err instanceof Error ? err.message : 'Failed to generate report');
     } finally {
       setGenerating(false);
+      setCreativeStatus(null);
     }
   };
 
@@ -212,6 +225,7 @@ export function SpaceDashboardPage() {
           reports={weeklyReports}
           isLoading={aggLoading}
           isGenerating={weeklyGenerating}
+          generatingLabel={weeklyGenerating ? (creativeStatus ?? 'Generating report…') : undefined}
           periodType="week"
           onGenerate={() => handleGenerateAggregate('week')}
           isFirst={!showDaily}
@@ -225,6 +239,7 @@ export function SpaceDashboardPage() {
           reports={monthlyReports}
           isLoading={aggLoading}
           isGenerating={monthlyGenerating}
+          generatingLabel={monthlyGenerating ? (creativeStatus ?? 'Generating report…') : undefined}
           periodType="month"
           onGenerate={() => handleGenerateAggregate('month')}
           isFirst={!showDaily && !showWeekly}
@@ -373,6 +388,7 @@ function AggregateSection({
   reports,
   isLoading,
   isGenerating,
+  generatingLabel,
   periodType,
   onGenerate,
   isFirst = false,
@@ -382,6 +398,7 @@ function AggregateSection({
   reports: AggregateReport[];
   isLoading: boolean;
   isGenerating: boolean;
+  generatingLabel?: string;
   periodType: PeriodType;
   onGenerate: () => void;
   isFirst?: boolean;
@@ -412,7 +429,9 @@ function AggregateSection({
           onClick={onGenerate}
           className="border-border bg-card text-sm font-medium text-foreground hover:bg-accent whitespace-nowrap"
         >
-          {isGenerating ? 'Generating…' : `Generate ${periodType === 'week' ? 'Weekly' : 'Monthly'}`}
+          {isGenerating
+            ? (generatingLabel ?? 'Generating…')
+            : `Generate ${periodType === 'week' ? 'Weekly' : 'Monthly'}`}
         </Button>
       </div>
 

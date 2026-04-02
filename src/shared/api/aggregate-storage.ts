@@ -51,12 +51,20 @@ export async function loadAggregateReports(
   return (data as AggregateRow[]).map(rowToAggregate);
 }
 
+export interface CreativeParams {
+  space_id: string;
+  space_name: string;
+  period_start: string;
+  concepts: { title: string; description: string }[];
+  date_folder_id: string;
+  concept_folder_ids: string[];
+  creative_prompt_template: string;
+}
+
 export async function generateAggregateReport(
   spaceId: string,
   periodType: PeriodType,
-): Promise<{ success: boolean; error?: string }> {
-  // Weekly: use backfill (daily reports) — works without embeddings/clusters.
-  // Monthly: use weekly-report (cluster-based) — requires embeddings.
+): Promise<{ success: boolean; error?: string; creativeParams?: CreativeParams }> {
   const fn = periodType === 'week' ? 'weekly-report-backfill-daily' : 'weekly-report';
   const { data, error } = await supabase.functions.invoke(fn, {
     body: periodType === 'week' ? { space_id: spaceId } : { space_id: spaceId, period_type: periodType },
@@ -68,5 +76,65 @@ export async function generateAggregateReport(
     const firstError = spaces?.[0]?.error;
     return { success: false, error: firstError ?? 'Report generation failed' };
   }
-  return { success: true };
+
+  const spaces = data?.spaces as { creative_params?: CreativeParams }[] | undefined;
+  const creativeParams = spaces?.[0]?.creative_params;
+  return { success: true, creativeParams };
+}
+
+const IMAGES_PER_CONCEPT = 10;
+const BATCH_SIZE = 5;
+const MAX_STAGNANT = 6;
+
+export async function fillCreativesFromClient(
+  params: CreativeParams,
+  onProgress?: (conceptIdx: number, totalConcepts: number, imagesCount: number) => void,
+): Promise<void> {
+  for (let ci = 0; ci < params.concepts.length; ci++) {
+    let fileIndex = 0;
+    let stagnant = 0;
+
+    while (fileIndex < IMAGES_PER_CONCEPT && stagnant < MAX_STAGNANT) {
+      const count = Math.min(BATCH_SIZE, IMAGES_PER_CONCEPT - fileIndex);
+
+      try {
+        const { data, error } = await supabase.functions.invoke('generate-creatives', {
+          body: {
+            space_id: params.space_id,
+            space_name: params.space_name,
+            period_start: params.period_start,
+            concept_index: ci,
+            concepts: params.concepts,
+            image_offset: fileIndex,
+            image_count: count,
+            creative_prompt_template: params.creative_prompt_template,
+            ...(params.date_folder_id ? { date_folder_id: params.date_folder_id } : {}),
+            ...(params.concept_folder_ids[ci] ? { concept_folder_id: params.concept_folder_ids[ci] } : {}),
+          },
+        });
+
+        if (error) {
+          console.error(`[fillCreatives] concept ${ci} error:`, error);
+          stagnant++;
+          continue;
+        }
+
+        const added = data?.images_uploaded ?? 0;
+        fileIndex = typeof data?.next_file_index === 'number' ? data.next_file_index : fileIndex + added;
+
+        if (added === 0) {
+          stagnant++;
+        } else {
+          stagnant = 0;
+        }
+      } catch (e) {
+        console.error(`[fillCreatives] concept ${ci}:`, e);
+        stagnant++;
+      }
+
+      onProgress?.(ci, params.concepts.length, fileIndex);
+    }
+
+    onProgress?.(ci, params.concepts.length, fileIndex);
+  }
 }

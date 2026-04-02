@@ -26,16 +26,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-type EdgeGlobal = typeof globalThis & {
-  EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
-};
-
-function edgeRuntimeWaitUntil(promise: Promise<unknown>): void {
-  const eg = globalThis as EdgeGlobal;
-  if (eg.EdgeRuntime?.waitUntil) eg.EdgeRuntime.waitUntil(promise);
-  else void promise;
-}
-
 type PeriodType = 'week' | 'month';
 
 interface SpaceConfig {
@@ -106,95 +96,6 @@ function getPreviousWeek(): { start: string; end: string } {
     start: start.toISOString().slice(0, 10),
     end: end.toISOString().slice(0, 10),
   };
-}
-
-const CREATIVE_IMAGES_PER_CONCEPT = 10;
-const CREATIVE_FILL_MAX_ROUNDS = 30;
-const CREATIVE_FILL_STAGNANT_MAX = 6;
-
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function fillCreativeFolderForConcept(
-  conceptIdx: number,
-  initialFileIndex: number,
-  logPrefix: string,
-  postBatch: (conceptIdx: number, offset: number, count: number) => Promise<Response>,
-): Promise<void> {
-  let idx = initialFileIndex;
-  let stagnant = 0;
-  let rounds = 0;
-
-  while (idx < CREATIVE_IMAGES_PER_CONCEPT && rounds < CREATIVE_FILL_MAX_ROUNDS) {
-    rounds++;
-    const attempts = Math.min(5, CREATIVE_IMAGES_PER_CONCEPT - idx);
-    if (attempts < 1) break;
-
-    try {
-      const res = await postBatch(conceptIdx, idx, attempts);
-      const text = await res.text();
-      if (!res.ok) {
-        console.error(`${logPrefix} concept ${conceptIdx} HTTP ${res.status}:`, text.slice(0, 500));
-        stagnant++;
-        await sleepMs(1000);
-        if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) {
-          console.error(
-            `${logPrefix} concept ${conceptIdx}: gave up after ${stagnant} failed batches (have ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} files)`,
-          );
-          break;
-        }
-        continue;
-      }
-
-      let j: {
-        partial?: boolean;
-        images_uploaded?: number;
-        next_file_index?: number;
-        images_attempts?: number;
-        images_expected?: number;
-      };
-      try {
-        j = JSON.parse(text) as typeof j;
-      } catch {
-        stagnant++;
-        await sleepMs(1000);
-        if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) break;
-        continue;
-      }
-
-      const added = j.images_uploaded ?? 0;
-      idx = typeof j.next_file_index === 'number' ? j.next_file_index : idx + added;
-      if (j.partial) {
-        const exp = j.images_attempts ?? j.images_expected;
-        console.warn(`${logPrefix} concept ${conceptIdx} partial: ${j.images_uploaded}/${exp}`);
-      }
-
-      if (added === 0) {
-        stagnant++;
-        await sleepMs(1000);
-        if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) {
-          console.error(
-            `${logPrefix} concept ${conceptIdx}: gave up after ${stagnant} empty batches (have ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} files)`,
-          );
-          break;
-        }
-      } else {
-        stagnant = 0;
-      }
-    } catch (e) {
-      console.error(`${logPrefix} concept ${conceptIdx}:`, e);
-      stagnant++;
-      await sleepMs(1000);
-      if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) break;
-    }
-  }
-
-  if (idx < CREATIVE_IMAGES_PER_CONCEPT) {
-    console.warn(
-      `${logPrefix} concept ${conceptIdx}: only ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} images after ${rounds} batch rounds`,
-    );
-  }
 }
 
 function buildBackfillPrompt(domainPrompt: string): string {
@@ -612,17 +513,17 @@ serve(async (req) => {
           }
         }
 
-        // Create Drive folders once, then trigger generate-creatives per concept (avoids duplicates)
+        // Pre-create Drive folders so the client can drive image generation
         const concepts = analysis.creative_concepts ?? [];
+        let dateFolderId: string | undefined;
+        let conceptFolderIds: string[] = [];
+
         if (concepts.length > 0) {
           const supabaseUrl = Deno.env.get('SUPABASE_URL');
           const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
           const fnAuthKey = Deno.env.get('SERVICE_ROLE_JWT') ?? supabaseKey;
           if (supabaseUrl && supabaseKey) {
             const genUrl = `${supabaseUrl}/functions/v1/generate-creatives`;
-            // Create date + concept folders once to avoid race (duplicate "Late-Night Connection" etc)
-            let dateFolderId: string | undefined;
-            let conceptFolderIds: string[] = [];
             try {
               const folderRes = await fetch(genUrl, {
                 method: 'POST',
@@ -641,8 +542,8 @@ serve(async (req) => {
                 const folderData = (await folderRes.json()) as { date_folder_id?: string };
                 dateFolderId = folderData.date_folder_id;
               }
-              if (dateFolderId && concepts.length > 0) {
-                const conceptFoldersRes = await fetch(genUrl, {
+              if (dateFolderId) {
+                const cfRes = await fetch(genUrl, {
                   method: 'POST',
                   headers: {
                     apikey: supabaseKey,
@@ -657,104 +558,33 @@ serve(async (req) => {
                     create_concept_folders_only: true,
                   }),
                 });
-                if (conceptFoldersRes.ok) {
-                  const cfData = (await conceptFoldersRes.json()) as { concept_folder_ids?: string[] };
+                if (cfRes.ok) {
+                  const cfData = (await cfRes.json()) as { concept_folder_ids?: string[] };
                   conceptFolderIds = cfData.concept_folder_ids ?? [];
                 }
               }
             } catch (folderErr) {
               console.error(`[weekly-report-backfill-daily:${space.name}] create folders failed:`, folderErr);
             }
-            const promptTemplate = space.creative_prompt_template ?? '';
-            const payload = (conceptIdx: number, imageOffset: number, imageCount: number) => ({
-              space_id: space.id,
-              space_name: space.name,
-              period_start: periodStart,
-              concept_index: conceptIdx,
-              concepts,
-              image_offset: imageOffset,
-              image_count: imageCount,
-              creative_prompt_template: promptTemplate,
-              ...(dateFolderId ? { date_folder_id: dateFolderId } : {}),
-              ...(conceptFolderIds[conceptIdx] ? { concept_folder_id: conceptFolderIds[conceptIdx] } : {}),
-            });
-            const logP = `[weekly-report-backfill-daily:${space.name}]`;
-
-            const postBatch = (conceptIdx: number, offset: number, count: number) =>
-              fetch(genUrl, {
-                method: 'POST',
-                headers: {
-                  apikey: supabaseKey,
-                  Authorization: `Bearer ${fnAuthKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload(conceptIdx, offset, count)),
-              });
-
-            let creativesError: string | undefined;
-            let concept0StartIndex = 0;
-            if (concepts.length > 0) {
-              try {
-                const firstAttempts = Math.min(5, CREATIVE_IMAGES_PER_CONCEPT);
-                const firstRes = await postBatch(0, 0, firstAttempts);
-                const firstBody = await firstRes.text();
-                if (!firstRes.ok) {
-                  let errMsg = firstBody;
-                  try {
-                    const parsed = JSON.parse(firstBody) as { error?: string };
-                    if (parsed?.error) errMsg = parsed.error;
-                  } catch {
-                    errMsg = firstBody.slice(0, 200);
-                  }
-                  creativesError = errMsg;
-                  console.error(`${logP} generate-creatives failed:`, creativesError);
-                } else {
-                  try {
-                    const j = JSON.parse(firstBody) as { next_file_index?: number; images_uploaded?: number };
-                    concept0StartIndex =
-                      typeof j.next_file_index === 'number' ? j.next_file_index : (j.images_uploaded ?? 0);
-                  } catch {
-                    concept0StartIndex = 0;
-                  }
-                }
-              } catch (firstErr) {
-                creativesError = firstErr instanceof Error ? firstErr.message : String(firstErr);
-                console.error(`${logP} generate-creatives 0 error:`, firstErr);
-              }
-
-              const work = (async () => {
-                try {
-                  await Promise.all(
-                    concepts.map(async (_, conceptIdx) => {
-                      const startIdx = conceptIdx === 0 ? concept0StartIndex : 0;
-                      await fillCreativeFolderForConcept(conceptIdx, startIdx, logP, postBatch);
-                    }),
-                  );
-                } catch (orchErr) {
-                  console.error(`${logP} generate-creatives orchestration error:`, orchErr);
-                }
-                console.log(
-                  `[weekly-report-backfill-daily:${space.name}] Finished generate-creatives: ${concepts.length} concepts × ${CREATIVE_IMAGES_PER_CONCEPT} target images each`,
-                );
-              })();
-              edgeRuntimeWaitUntil(work);
-            }
-            if (creativesError) {
-              results.push({
-                spaceId: space.id,
-                spaceName: space.name,
-                success: false,
-                error: creativesError,
-              });
-            } else {
-              results.push({ spaceId: space.id, spaceName: space.name, success: true });
-            }
-          } else {
-            results.push({ spaceId: space.id, spaceName: space.name, success: true });
           }
-        } else {
-          results.push({ spaceId: space.id, spaceName: space.name, success: true });
         }
+
+        results.push({
+          spaceId: space.id,
+          spaceName: space.name,
+          success: true,
+          creative_params: concepts.length > 0
+            ? {
+                space_id: space.id,
+                space_name: space.name,
+                period_start: periodStart,
+                concepts,
+                date_folder_id: dateFolderId ?? '',
+                concept_folder_ids: conceptFolderIds,
+                creative_prompt_template: space.creative_prompt_template ?? '',
+              }
+            : undefined,
+        });
       } catch (err) {
         console.error(`[weekly-report-backfill-daily:${space.name}] Error:`, err);
         results.push({
