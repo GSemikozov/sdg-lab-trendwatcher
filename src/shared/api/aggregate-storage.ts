@@ -88,9 +88,18 @@ const MAX_STAGNANT = 6;
 
 export async function fillCreativesFromClient(
   params: CreativeParams,
-  onProgress?: (conceptIdx: number, totalConcepts: number, imagesCount: number) => void,
+  onProgress?: (completedConcepts: number, totalConcepts: number, totalImages: number) => void,
 ): Promise<void> {
-  for (let ci = 0; ci < params.concepts.length; ci++) {
+  const total = params.concepts.length;
+  const perConcept = new Array<number>(total).fill(0);
+  let done = 0;
+
+  const notify = () => {
+    const totalImages = perConcept.reduce((a, b) => a + b, 0);
+    onProgress?.(done, total, totalImages);
+  };
+
+  const fillOne = async (ci: number) => {
     let fileIndex = 0;
     let stagnant = 0;
 
@@ -132,9 +141,14 @@ export async function fillCreativesFromClient(
         stagnant++;
       }
 
-      onProgress?.(ci, params.concepts.length, fileIndex);
+      perConcept[ci] = fileIndex;
+      notify();
     }
 
-    onProgress?.(ci, params.concepts.length, fileIndex);
-  }
+    perConcept[ci] = fileIndex;
+    done++;
+    notify();
+  };
+
+  await Promise.all(params.concepts.map((_, ci) => fillOne(ci)));
 }

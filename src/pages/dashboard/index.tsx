@@ -101,10 +101,14 @@ export function SpaceDashboardPage() {
 
       if (result.creativeParams && result.creativeParams.concepts.length > 0) {
         const total = result.creativeParams.concepts.length;
-        setCreativeStatus(`Creating images: concept 1/${total}…`);
-        await fillCreativesFromClient(result.creativeParams, (ci, totalC, imgs) => {
-          const done = ci + (imgs >= 10 ? 1 : 0);
-          setCreativeStatus(`Creating images: concept ${Math.min(done + 1, totalC)}/${totalC} (${imgs}/10)…`);
+        const target = total * 10;
+        setCreativeStatus(`Creating images: 0/${target}…`);
+        await fillCreativesFromClient(result.creativeParams, (doneConcepts, _totalC, totalImgs) => {
+          setCreativeStatus(
+            doneConcepts >= total
+              ? null
+              : `Creating images: ${totalImgs}/${target} (${doneConcepts}/${total} concepts done)…`,
+          );
         });
         setCreativeStatus(null);
       }
