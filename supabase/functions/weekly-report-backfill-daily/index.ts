@@ -126,6 +126,12 @@ Rules:
   return `You are a general trend analyst.\n\n${base}`;
 }
 
+function sanitize(s: unknown): string {
+  if (typeof s !== 'string') return String(s ?? '');
+  // Strip null bytes and other control chars (except \n \r \t) that break JSON parsing on OpenAI side
+  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+}
+
 async function analyzeWithOpenAI(opts: {
   domainPrompt: string;
   dailyReports: DailyReportRow[];
@@ -140,10 +146,10 @@ async function analyzeWithOpenAI(opts: {
       const concepts = (r.ad_concepts ?? []).slice(0, 3);
       return `Daily report #${idx + 1} (${r.date_from}..${r.date_to})
 Summary:
-${r.summary}
+${sanitize(r.summary)}
 Top ad concepts (optional):
 ${concepts
-  .map((c) => `- ${c.title}: ${c.description}`)
+  .map((c) => `- ${sanitize(c.title)}: ${sanitize(c.description)}`)
   .join('\n')}`;
     })
     .join('\n\n---\n\n');
@@ -153,22 +159,26 @@ ${concepts
 Here are the daily reports:
 ${dailyText}`;
 
+  const payload = {
+    model: 'gpt-4o-mini',
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: buildBackfillPrompt(domainPrompt) },
+      { role: 'user', content: userMessage },
+    ],
+    max_tokens: 4000,
+    temperature: 0.35,
+  };
+  const jsonBody = JSON.stringify(payload);
+  console.log(`[weekly-report-backfill-daily] OpenAI request body length: ${jsonBody.length} bytes`);
+
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${openaiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: buildBackfillPrompt(domainPrompt) },
-        { role: 'user', content: userMessage },
-      ],
-      max_tokens: 4000,
-      temperature: 0.35,
-    }),
+    body: jsonBody,
   });
 
   if (!res.ok) {

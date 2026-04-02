@@ -204,10 +204,15 @@ async function analyzeWithOpenAI(
   cluster_summaries: ClusterSummary[];
   creative_concepts: AdConcept[];
 }> {
+  const sanitize = (s: unknown): string => {
+    if (typeof s !== 'string') return String(s ?? '');
+    return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+  };
+
   const clusterText = clusters
     .map((c) => {
       const postsText = c.posts
-        .map((p) => `  [r/${p.subreddit}] ${p.content.slice(0, 200)}`)
+        .map((p) => `  [r/${p.subreddit}] ${sanitize(p.content).slice(0, 200)}`)
         .join('\n');
       return `Cluster ${c.index} (${c.size} posts):\n${postsText}`;
     })
@@ -219,22 +224,26 @@ async function analyzeWithOpenAI(
 
   const userMessage = `Analyze ${periodLabel} clusters:\n\n${clusterText}${prevText}`;
 
+  const payload = {
+    model: 'gpt-4o-mini',
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: buildWeeklyPrompt(domainPrompt, periodType) },
+      { role: 'user', content: userMessage },
+    ],
+    max_tokens: 4000,
+    temperature: 0.3,
+  };
+  const jsonBody = JSON.stringify(payload);
+  console.log(`[weekly-report] OpenAI request body length: ${jsonBody.length} bytes`);
+
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${openaiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: buildWeeklyPrompt(domainPrompt, periodType) },
-        { role: 'user', content: userMessage },
-      ],
-      max_tokens: 4000,
-      temperature: 0.3,
-    }),
+    body: jsonBody,
   });
 
   if (!res.ok) {
