@@ -58,10 +58,8 @@ export async function generateAggregateReport(
   // Weekly: use backfill (daily reports) — works without embeddings/clusters.
   // Monthly: use weekly-report (cluster-based) — requires embeddings.
   const fn = periodType === 'week' ? 'weekly-report-backfill-daily' : 'weekly-report';
-  // Long timeout: Edge Function waits until all Drive creatives (10 per concept) finish.
   const { data, error } = await supabase.functions.invoke(fn, {
     body: periodType === 'week' ? { space_id: spaceId } : { space_id: spaceId, period_type: periodType },
-    timeout: 1_200_000,
   });
 
   if (error) throw new Error(error.message || 'Report function failed');

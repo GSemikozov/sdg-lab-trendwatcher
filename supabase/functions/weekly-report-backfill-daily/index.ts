@@ -26,6 +26,16 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+type EdgeGlobal = typeof globalThis & {
+  EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
+};
+
+function edgeRuntimeWaitUntil(promise: Promise<unknown>): void {
+  const eg = globalThis as EdgeGlobal;
+  if (eg.EdgeRuntime?.waitUntil) eg.EdgeRuntime.waitUntil(promise);
+  else void promise;
+}
+
 type PeriodType = 'week' | 'month';
 
 interface SpaceConfig {
@@ -99,8 +109,8 @@ function getPreviousWeek(): { start: string; end: string } {
 }
 
 const CREATIVE_IMAGES_PER_CONCEPT = 10;
-const CREATIVE_FILL_MAX_ROUNDS = 400;
-const CREATIVE_FILL_STAGNANT_MAX = 120;
+const CREATIVE_FILL_MAX_ROUNDS = 30;
+const CREATIVE_FILL_STAGNANT_MAX = 6;
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -127,7 +137,7 @@ async function fillCreativeFolderForConcept(
       if (!res.ok) {
         console.error(`${logPrefix} concept ${conceptIdx} HTTP ${res.status}:`, text.slice(0, 500));
         stagnant++;
-        await sleepMs(2500);
+        await sleepMs(1000);
         if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) {
           console.error(
             `${logPrefix} concept ${conceptIdx}: gave up after ${stagnant} failed batches (have ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} files)`,
@@ -148,7 +158,7 @@ async function fillCreativeFolderForConcept(
         j = JSON.parse(text) as typeof j;
       } catch {
         stagnant++;
-        await sleepMs(2500);
+        await sleepMs(1000);
         if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) break;
         continue;
       }
@@ -162,7 +172,7 @@ async function fillCreativeFolderForConcept(
 
       if (added === 0) {
         stagnant++;
-        await sleepMs(2500);
+        await sleepMs(1000);
         if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) {
           console.error(
             `${logPrefix} concept ${conceptIdx}: gave up after ${stagnant} empty batches (have ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} files)`,
@@ -175,7 +185,7 @@ async function fillCreativeFolderForConcept(
     } catch (e) {
       console.error(`${logPrefix} concept ${conceptIdx}:`, e);
       stagnant++;
-      await sleepMs(2500);
+      await sleepMs(1000);
       if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) break;
     }
   }
@@ -712,20 +722,23 @@ serve(async (req) => {
                 console.error(`${logP} generate-creatives 0 error:`, firstErr);
               }
 
-              try {
-                await Promise.all(
-                  concepts.map(async (_, conceptIdx) => {
-                    const startIdx = conceptIdx === 0 ? concept0StartIndex : 0;
-                    await fillCreativeFolderForConcept(conceptIdx, startIdx, logP, postBatch);
-                  }),
+              const work = (async () => {
+                try {
+                  await Promise.all(
+                    concepts.map(async (_, conceptIdx) => {
+                      const startIdx = conceptIdx === 0 ? concept0StartIndex : 0;
+                      await fillCreativeFolderForConcept(conceptIdx, startIdx, logP, postBatch);
+                    }),
+                  );
+                } catch (orchErr) {
+                  console.error(`${logP} generate-creatives orchestration error:`, orchErr);
+                }
+                console.log(
+                  `[weekly-report-backfill-daily:${space.name}] Finished generate-creatives: ${concepts.length} concepts × ${CREATIVE_IMAGES_PER_CONCEPT} target images each`,
                 );
-              } catch (orchErr) {
-                console.error(`${logP} generate-creatives orchestration error:`, orchErr);
-              }
+              })();
+              edgeRuntimeWaitUntil(work);
             }
-            console.log(
-              `[weekly-report-backfill-daily:${space.name}] Finished generate-creatives: ${concepts.length} concepts × ${CREATIVE_IMAGES_PER_CONCEPT} target images each`,
-            );
             if (creativesError) {
               results.push({
                 spaceId: space.id,

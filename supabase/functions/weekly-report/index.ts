@@ -18,6 +18,16 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+type EdgeGlobal = typeof globalThis & {
+  EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
+};
+
+function edgeRuntimeWaitUntil(promise: Promise<unknown>): void {
+  const eg = globalThis as EdgeGlobal;
+  if (eg.EdgeRuntime?.waitUntil) eg.EdgeRuntime.waitUntil(promise);
+  else void promise;
+}
+
 interface SpaceConfig {
   id: string;
   name: string;
@@ -395,12 +405,11 @@ async function sendEmail(
   }
 }
 
-// --- Creative images on Drive: exactly 10 per concept; retry aggressively (time over speed) ---
+// --- Creative images on Drive: 10 per concept via waitUntil background work ---
 
 const CREATIVE_IMAGES_PER_CONCEPT = 10;
-const CREATIVE_FILL_MAX_ROUNDS = 400;
-/** Stop only after this many consecutive batches with no new file (API hard down). */
-const CREATIVE_FILL_STAGNANT_MAX = 120;
+const CREATIVE_FILL_MAX_ROUNDS = 30;
+const CREATIVE_FILL_STAGNANT_MAX = 6;
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -427,7 +436,7 @@ async function fillCreativeFolderForConcept(
       if (!res.ok) {
         console.error(`${logPrefix} concept ${conceptIdx} HTTP ${res.status}:`, text.slice(0, 500));
         stagnant++;
-        await sleepMs(2500);
+        await sleepMs(1000);
         if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) {
           console.error(
             `${logPrefix} concept ${conceptIdx}: gave up after ${stagnant} failed batches (have ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} files)`,
@@ -448,7 +457,7 @@ async function fillCreativeFolderForConcept(
         j = JSON.parse(text) as typeof j;
       } catch {
         stagnant++;
-        await sleepMs(2500);
+        await sleepMs(1000);
         if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) break;
         continue;
       }
@@ -462,7 +471,7 @@ async function fillCreativeFolderForConcept(
 
       if (added === 0) {
         stagnant++;
-        await sleepMs(2500);
+        await sleepMs(1000);
         if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) {
           console.error(
             `${logPrefix} concept ${conceptIdx}: gave up after ${stagnant} empty batches (have ${idx}/${CREATIVE_IMAGES_PER_CONCEPT} files)`,
@@ -475,7 +484,7 @@ async function fillCreativeFolderForConcept(
     } catch (e) {
       console.error(`${logPrefix} concept ${conceptIdx}:`, e);
       stagnant++;
-      await sleepMs(2500);
+      await sleepMs(1000);
       if (stagnant >= CREATIVE_FILL_STAGNANT_MAX) break;
     }
   }
@@ -758,18 +767,21 @@ async function processSpace(
         }),
       });
 
-    try {
-      await Promise.all(
-        concepts.map((_, conceptIdx) =>
-          fillCreativeFolderForConcept(conceptIdx, 0, logP, postBatch),
-        ),
+    const work = (async () => {
+      try {
+        await Promise.all(
+          concepts.map((_, conceptIdx) =>
+            fillCreativeFolderForConcept(conceptIdx, 0, logP, postBatch),
+          ),
+        );
+      } catch (e) {
+        console.error(`${logP} generate-creatives orchestration error:`, e);
+      }
+      console.log(
+        `[weekly-report:${space.name}] Finished generate-creatives: ${concepts.length} concepts × ${CREATIVE_IMAGES_PER_CONCEPT} target images each`,
       );
-    } catch (e) {
-      console.error(`${logP} generate-creatives orchestration error:`, e);
-    }
-    console.log(
-      `[weekly-report:${space.name}] Finished generate-creatives: ${concepts.length} concepts × ${CREATIVE_IMAGES_PER_CONCEPT} target images each`,
-    );
+    })();
+    edgeRuntimeWaitUntil(work);
   }
 
   return { spaceId: space.id, spaceName: space.name, success: true };
