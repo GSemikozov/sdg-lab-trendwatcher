@@ -62,24 +62,10 @@ export interface CreativeParams {
 }
 
 export async function generateAggregateReport(
-  spaceId: string,
-  periodType: PeriodType,
+  _spaceId: string,
+  _periodType: PeriodType,
 ): Promise<{ success: boolean; error?: string; creativeParams?: CreativeParams }> {
-  const fn = periodType === 'week' ? 'weekly-report-backfill-daily' : 'weekly-report';
-  const { data, error } = await supabase.functions.invoke(fn, {
-    body: periodType === 'week' ? { space_id: spaceId } : { space_id: spaceId, period_type: periodType },
-  });
-
-  if (error) throw new Error(error.message || 'Report function failed');
-  if (!data?.success) {
-    const spaces = data?.spaces as { error?: string }[] | undefined;
-    const firstError = spaces?.[0]?.error;
-    return { success: false, error: firstError ?? 'Report generation failed' };
-  }
-
-  const spaces = data?.spaces as { creative_params?: CreativeParams }[] | undefined;
-  const creativeParams = spaces?.[0]?.creative_params;
-  return { success: true, creativeParams };
+  return { success: false, error: 'Service is temporarily unavailable' };
 }
 
 const IMAGES_PER_CONCEPT = 10;
