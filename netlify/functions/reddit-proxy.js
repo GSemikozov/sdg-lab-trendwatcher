@@ -134,7 +134,7 @@ function parseListingJson(json, subreddit) {
       selftext: (p.selftext || '').slice(0, 500),
       score: p.score || 0,
       num_comments: p.num_comments || 0,
-      subreddit: p.subreddit || subreddit,
+      subreddit: String(p.subreddit || subreddit).toLowerCase(),
       created_utc: p.created_utc,
       permalink: p.permalink || '',
     }));

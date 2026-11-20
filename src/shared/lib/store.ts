@@ -193,6 +193,8 @@ export const useAppStore = create<AppStore>()(
               return { success: true };
             }
             set({ reports, isLoading: false });
+            // Invalidate loads that started mid-generation (same freshness) so they cannot wipe this.
+            reportsFreshness += 1;
 
             return { success: true };
           } catch (err) {

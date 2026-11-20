@@ -546,11 +546,11 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
             skipRedlistenOnFallback = true;
             data = { posts: [] };
           }
-          const errors = data.errors ?? [];
+          const errors = Array.isArray(data.errors) ? data.errors : [];
           if (errors.length > 0) {
             for (const e of errors) console.error('[reddit-proxy]', e);
           }
-          const posts = data.posts ?? [];
+          const posts = Array.isArray(data.posts) ? data.posts : [];
           if (posts.length > 0) {
             return {
               posts,
@@ -559,9 +559,14 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
               redlistenAttempted: data.redlistenAttempted,
             };
           }
-          // Empty or undecoded proxy: if Redlisten was (or may have been) attempted, do NOT re-spend.
+          // Empty body: allow Redlisten fallback only with explicit "no attempt" metadata.
+          // `{}` / `{posts:[]}` without meta is ambiguous — do not re-spend Free credits.
+          const hasExplicitAttemptMeta =
+            typeof data.redlistenAttempted === 'boolean' ||
+            (typeof data.source === 'string' && data.source.length > 0);
           const redlistenAlready =
             skipRedlistenOnFallback ||
+            !hasExplicitAttemptMeta ||
             data.redlistenAttempted === true ||
             (typeof data.source === 'string' && data.source.startsWith('redlisten'));
           if (redlistenAlready) {
@@ -570,7 +575,7 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
             );
             return fetchAllSubredditsDirect(subreddits, oauthToken, { skipRedlisten: true });
           }
-          console.warn('[reddit] proxy returned 0 posts; falling back to direct/Redlisten/OAuth');
+          console.warn('[reddit] proxy returned 0 posts with explicit no-Redlisten meta; falling back including Redlisten');
         }
       } catch (err) {
         console.error('[reddit] proxy failed (ambiguous); skipping Redlisten on fallback:', err);
@@ -973,7 +978,9 @@ async function processSpace(
   const now = new Date().toISOString();
   const rawPostCount: Record<string, number> = {};
   for (const sub of subreddits) {
-    rawPostCount[sub] = posts.filter((p) => p.subreddit === sub).length;
+    const key = sub.toLowerCase();
+    // Keep configured key casing; match posts case-insensitively (RSS/OAuth may differ).
+    rawPostCount[sub] = posts.filter((p) => p.subreddit.toLowerCase() === key).length;
   }
 
   const report = {

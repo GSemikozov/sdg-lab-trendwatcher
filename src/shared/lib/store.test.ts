@@ -400,6 +400,68 @@ describe('useAppStore', () => {
     expect(useAppStore.getState().reports[0]?.id).toBe('newer-gen');
   });
 
+  it('should invalidate a loadReports that starts mid-generation after refresh commits', async () => {
+    setActiveSpace();
+    let resolveInvoke: (value: { data: { success: boolean }; error: null }) => void = () => {};
+    mockInvoke.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInvoke = resolve;
+        })
+    );
+    let resolveMidLoad: (value: unknown[]) => void = () => {};
+    let getAllCalls = 0;
+    mockGetAll.mockImplementation(() => {
+      getAllCalls += 1;
+      if (getAllCalls === 1) {
+        // Mid-generation load (dashboard remount) — stale pre-gen snapshot.
+        return new Promise((resolve) => {
+          resolveMidLoad = resolve;
+        });
+      }
+      return Promise.resolve([
+        {
+          id: 'fresh-gen',
+          createdAt: new Date().toISOString(),
+          dateRange: { from: '', to: '' },
+          subreddits: ['lonely'],
+          totalPostsAnalyzed: 4,
+          summary: 'Fresh',
+          signals: [],
+          rawPostCount: { lonely: 4 },
+          spaceId: mockSpace.id,
+        },
+      ]);
+    });
+
+    const genPromise = useAppStore.getState().generateReport();
+    // Remount-style load while invoke is still pending (same freshness as generate).
+    const midLoad = useAppStore.getState().loadReports();
+    await vi.waitFor(() => expect(getAllCalls).toBe(1));
+
+    resolveInvoke({ data: { success: true }, error: null });
+    await genPromise;
+    expect(useAppStore.getState().reports[0]?.id).toBe('fresh-gen');
+
+    resolveMidLoad([
+      {
+        id: 'stale-pre-gen',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 1,
+        summary: 'Stale',
+        signals: [],
+        rawPostCount: { lonely: 1 },
+        spaceId: mockSpace.id,
+      },
+    ]);
+    await midLoad;
+
+    expect(useAppStore.getState().reports).toHaveLength(1);
+    expect(useAppStore.getState().reports[0]?.id).toBe('fresh-gen');
+  });
+
   it('should clear isLoading when generate overlaps an in-flight loadReports', async () => {
     setActiveSpace();
     let resolveInitialLoad: (value: unknown[]) => void = () => {};
