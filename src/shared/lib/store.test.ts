@@ -235,4 +235,31 @@ describe('useAppStore', () => {
     await second;
     expect(useAppStore.getState().isGenerating).toBe(false);
   });
+
+  it('should keep isGenerating true when the second call settles first', async () => {
+    setActiveSpace();
+    const resolvers: Array<(value: { data: { success: boolean }; error: null }) => void> = [];
+    mockInvoke.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    mockGetAll.mockResolvedValue([]);
+
+    const first = useAppStore.getState().generateReport();
+    const second = useAppStore.getState().generateReport();
+
+    expect(useAppStore.getState().isGenerating).toBe(true);
+    expect(resolvers).toHaveLength(2);
+
+    // Reverse completion order: second settles while first is still pending.
+    resolvers[1]!({ data: { success: true }, error: null });
+    await second;
+    expect(useAppStore.getState().isGenerating).toBe(true);
+
+    resolvers[0]!({ data: { success: true }, error: null });
+    await first;
+    expect(useAppStore.getState().isGenerating).toBe(false);
+  });
 });

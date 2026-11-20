@@ -124,20 +124,25 @@ async function fetchViaRss(subreddit) {
   ];
   const errors = [];
   for (const url of urls) {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        Accept: 'application/atom+xml,application/xml',
-      },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      errors.push(`${url} → ${res.status} ${text.slice(0, 80)}`);
-      continue;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': USER_AGENT,
+          Accept: 'application/atom+xml,application/xml',
+        },
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        errors.push(`${url} → ${res.status} ${text.slice(0, 80)}`);
+        continue;
+      }
+      const posts = parseRssPosts(await res.text(), subreddit);
+      if (posts.length > 0) return { posts, errors };
+      errors.push(`${url} → empty`);
+    } catch (err) {
+      // Keep walking the ladder so later endpoints still run.
+      errors.push(`${url} → ${err instanceof Error ? err.message : String(err)}`);
     }
-    const posts = parseRssPosts(await res.text(), subreddit);
-    if (posts.length > 0) return { posts, errors };
-    errors.push(`${url} → empty`);
   }
   return { posts: [], errors };
 }

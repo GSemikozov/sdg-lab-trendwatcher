@@ -89,6 +89,10 @@ export function SpaceDashboardPage() {
     setWeeklyReports([]);
     setMonthlyReports([]);
     setAggError(null);
+    // Clear generation UI so a late settle from the previous space cannot leave buttons stuck.
+    setWeeklyGenerating(false);
+    setMonthlyGenerating(false);
+    setCreativeStatus(null);
   }, [activeSpaceId]);
 
   const handleGenerateAggregate = async (periodType: PeriodType) => {
@@ -127,6 +131,7 @@ export function SpaceDashboardPage() {
       if (spaceIdRef.current !== spaceId) return;
       setAggError(err instanceof Error ? err.message : 'Failed to generate report');
     } finally {
+      // Always clear for this space's run; space-change effect also resets flags on navigation.
       if (spaceIdRef.current === spaceId) {
         setGenerating(false);
         setCreativeStatus(null);
