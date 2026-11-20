@@ -61,6 +61,9 @@ function buildReportBody(activeSpaceId: string | null, spaces: Space[]): Record<
   return body;
 }
 
+/** Tracks overlapping generateReport() calls so isGenerating stays true until the last one settles. */
+let generateReportPending = 0;
+
 export const useAppStore = create<AppStore>()(
   devtools(
     persist(
@@ -111,6 +114,7 @@ export const useAppStore = create<AppStore>()(
         },
 
         generateReport: async () => {
+          generateReportPending += 1;
           set({ isGenerating: true, error: null });
           const spaceIdAtStart = get().activeSpaceId;
           try {
@@ -138,7 +142,10 @@ export const useAppStore = create<AppStore>()(
             console.error('generateReport error:', err);
             return { success: false, error: message };
           } finally {
-            set({ isGenerating: false });
+            generateReportPending = Math.max(0, generateReportPending - 1);
+            if (generateReportPending === 0) {
+              set({ isGenerating: false });
+            }
           }
         },
 

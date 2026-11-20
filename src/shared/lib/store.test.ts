@@ -153,30 +153,24 @@ describe('useAppStore', () => {
     expect(result.error).toBe('No space selected');
   });
 
-  it('should not replace reports if active space changed during generation', async () => {
+  it('should not replace reports if active space changed during report loading', async () => {
     setActiveSpace();
-    let resolveInvoke: (value: { data: { success: boolean }; error: null }) => void = () => {};
-    mockInvoke.mockImplementation(
+    mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
+
+    let resolveGetAll: (value: unknown[]) => void = () => {};
+    mockGetAll.mockImplementation(
       () =>
         new Promise((resolve) => {
-          resolveInvoke = resolve;
+          resolveGetAll = resolve;
         })
     );
-    mockGetAll.mockResolvedValue([
-      {
-        id: 'stale-report',
-        createdAt: new Date().toISOString(),
-        dateRange: { from: '', to: '' },
-        subreddits: ['lonely'],
-        totalPostsAnalyzed: 1,
-        summary: 'From space A',
-        signals: [],
-        rawPostCount: { lonely: 1 },
-        spaceId: mockSpace.id,
-      },
-    ]);
 
     const pending = useAppStore.getState().generateReport();
+
+    // Wait until getAll is in flight (after invoke resolved), then switch spaces.
+    await vi.waitFor(() => {
+      expect(mockGetAll).toHaveBeenCalled();
+    });
 
     useAppStore.setState({
       activeSpaceId: 'space-b',
@@ -195,11 +189,50 @@ describe('useAppStore', () => {
       ],
     });
 
-    resolveInvoke({ data: { success: true }, error: null });
+    resolveGetAll([
+      {
+        id: 'stale-report',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 1,
+        summary: 'From space A',
+        signals: [],
+        rawPostCount: { lonely: 1 },
+        spaceId: mockSpace.id,
+      },
+    ]);
+
     const result = await pending;
 
     expect(result.success).toBe(true);
     expect(useAppStore.getState().reports).toHaveLength(1);
     expect(useAppStore.getState().reports[0]?.id).toBe('space-b-report');
+  });
+
+  it('should keep isGenerating true until all overlapping calls settle', async () => {
+    setActiveSpace();
+    const resolvers: Array<(value: { data: { success: boolean }; error: null }) => void> = [];
+    mockInvoke.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    mockGetAll.mockResolvedValue([]);
+
+    const first = useAppStore.getState().generateReport();
+    const second = useAppStore.getState().generateReport();
+
+    expect(useAppStore.getState().isGenerating).toBe(true);
+    expect(resolvers).toHaveLength(2);
+
+    resolvers[0]!({ data: { success: true }, error: null });
+    await first;
+    expect(useAppStore.getState().isGenerating).toBe(true);
+
+    resolvers[1]!({ data: { success: true }, error: null });
+    await second;
+    expect(useAppStore.getState().isGenerating).toBe(false);
   });
 });

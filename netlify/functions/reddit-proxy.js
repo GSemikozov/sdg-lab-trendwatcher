@@ -181,8 +181,11 @@ export const handler = async (event) => {
         if (oauthToken) {
           try {
             const posts = await fetchViaOAuth(subreddit, oauthToken);
-            allPosts.push(...posts);
-            continue;
+            if (posts.length > 0) {
+              allPosts.push(...posts);
+              continue;
+            }
+            errors.push(`r/${subreddit}: oauth returned 0 posts; trying RSS`);
           } catch (err) {
             errors.push(
               `r/${subreddit}: oauth listing failed (${err instanceof Error ? err.message : String(err)}); trying RSS`
