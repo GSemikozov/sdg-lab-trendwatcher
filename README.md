@@ -58,6 +58,8 @@ npm run lint:fix   # Biome auto-fix
 Frontend deploys automatically to Netlify on push to `main`. Edge Function deploys via:
 
 ```bash
+# --no-verify-jwt: gateway skips verify so pg_cron can use x-cron-secret.
+# The function still verifies manual JWTs (JWKS / JWT_SECRET / exact anon key) before Redlisten.
 npx supabase functions deploy daily-report --no-verify-jwt
 ```
 
@@ -238,7 +240,7 @@ Reddit shut down public RSS (Nov 2026) and blocks unauthenticated JSON from clou
 2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls; failed/empty batches recover inside the proxy (OAuth **if configured**, else RSS). Requires shared `REDDIT_PROXY_SECRET` (Bearer). Point Supabase Edge `REDDIT_PROXY_URL` at the deployed function. Ambiguous/empty Redlisten proxy outcomes use Edge `skipRedlisten` so Free credits are not spent twice.
 3. **Reddit OAuth / direct JSON** — **optional**. Only if you create a Reddit app and set `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` on **both** Edge and Netlify. Without a Reddit account, rely on Redlisten (+ RSS ladder, currently dead).
 
-**Auth before spend:** manual UI calls send Supabase anon/user JWT and must include `space_id` (active space loaded from DB). pg_cron all-spaces runs send `x-cron-secret` from Vault (`daily_report_cron_secret`) matching Edge `CRON_SECRET` (migration `014`).
+**Auth before spend:** manual UI calls send a Bearer that the handler verifies (exact `SUPABASE_ANON_KEY`, JWKS ES256, or optional `SUPABASE_JWT_SECRET`/`JWT_SECRET` HS256) plus `space_id`. pg_cron all-spaces runs send `x-cron-secret` from Vault (`daily_report_cron_secret`) matching Edge `CRON_SECRET` (migration `014`). Fabricated payload-only JWTs are rejected even with `--no-verify-jwt`.
 
 Sign up Free (no card): https://app.redlisten.com — set on **Netlify**: `REDLISTEN_API_KEY`, `REDDIT_PROXY_SECRET` (+ optional Reddit OAuth pair); on **Supabase Edge**: those plus `REDDIT_PROXY_URL` and `CRON_SECRET`.
 

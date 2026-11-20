@@ -7,9 +7,12 @@
  * Auth (before any Redlisten / reddit-proxy spend):
  * - Cron / all-spaces: `x-cron-secret` or Bearer must match Edge `CRON_SECRET`,
  *   or Bearer must equal the service-role key (timing-safe compare).
- * - Manual: Authorization Bearer whose JWT *payload* role is `anon` or `authenticated`
- *   (payload decode only — no signature/exp verify here; rely on gateway + `space_id`
- *   active-space check). Forged `service_role` payloads are not treated as cron.
+ * - Manual: cryptographically verified JWT (JWKS ES256 and/or `SUPABASE_JWT_SECRET` /
+ *   `JWT_SECRET` HS256) with role `anon`|`authenticated` and valid `exp`, OR Bearer
+ *   exactly equal to `SUPABASE_ANON_KEY` (legacy anon JWT as shared secret).
+ *   Deploy may use `--no-verify-jwt` so cron can send x-cron-secret; the handler
+ *   still verifies manual callers before Redlisten spend. Forged payload-only JWTs
+ *   are rejected.
  *
  * Manual call: POST with { space_id, emailRecipients? } — subreddits come from DB.
  * Cron call: POST with empty body → processes ALL active spaces sequentially.
@@ -56,18 +59,6 @@ function bearerFromAuthorization(header: string | null): string {
   return m?.[1]?.trim() ?? '';
 }
 
-function decodeJwtRole(token: string): string | undefined {
-  try {
-    const payload = token.split('.')[1];
-    if (!payload) return undefined;
-    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
-    const parsed = JSON.parse(json) as { role?: string };
-    return typeof parsed.role === 'string' ? parsed.role : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 type RequestAuth =
   | { kind: 'cron' }
   | { kind: 'manual'; role: 'anon' | 'authenticated' };
@@ -79,13 +70,158 @@ function jsonError(status: number, error: string): Response {
   });
 }
 
+function base64UrlToBytes(input: string): Uint8Array {
+  const padded = input + '='.repeat((4 - (input.length % 4)) % 4);
+  const bin = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function parseJwtJson(part: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(new TextDecoder().decode(base64UrlToBytes(part))) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function jwtNotExpired(payload: Record<string, unknown>): boolean {
+  const exp = payload.exp;
+  if (typeof exp !== 'number') return true; // legacy anon JWTs may omit exp
+  return exp * 1000 > Date.now();
+}
+
+async function loadJwksKeys(): Promise<JsonWebKey[]> {
+  const fromEnv = Deno.env.get('SUPABASE_JWKS')?.trim();
+  if (fromEnv) {
+    try {
+      const parsed = JSON.parse(fromEnv) as { keys?: JsonWebKey[] } | JsonWebKey[];
+      const keys = Array.isArray(parsed) ? parsed : parsed.keys;
+      if (Array.isArray(keys) && keys.length > 0) return keys;
+    } catch {
+      /* fall through to network JWKS */
+    }
+  }
+  const base = Deno.env.get('SUPABASE_URL')?.replace(/\/$/, '');
+  if (!base) return [];
+  try {
+    const res = await fetch(`${base}/auth/v1/.well-known/jwks.json`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { keys?: JsonWebKey[] };
+    return Array.isArray(data.keys) ? data.keys : [];
+  } catch {
+    return [];
+  }
+}
+
+async function verifyHs256Jwt(
+  token: string,
+  secret: string
+): Promise<Record<string, unknown> | null> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sigB64] = parts;
+  const header = parseJwtJson(headerB64);
+  if (!header || header.alg !== 'HS256') return null;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
+  );
+  const ok = await crypto.subtle.verify(
+    'HMAC',
+    key,
+    base64UrlToBytes(sigB64),
+    new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+  );
+  if (!ok) return null;
+  const payload = parseJwtJson(payloadB64);
+  if (!payload || !jwtNotExpired(payload)) return null;
+  return payload;
+}
+
+async function verifyEs256Jwt(
+  token: string,
+  jwk: JsonWebKey
+): Promise<Record<string, unknown> | null> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sigB64] = parts;
+  const header = parseJwtJson(headerB64);
+  if (!header || header.alg !== 'ES256') return null;
+  const key = await crypto.subtle.importKey(
+    'jwk',
+    jwk,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['verify']
+  );
+  const ok = await crypto.subtle.verify(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    key,
+    base64UrlToBytes(sigB64),
+    new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+  );
+  if (!ok) return null;
+  const payload = parseJwtJson(payloadB64);
+  if (!payload || !jwtNotExpired(payload)) return null;
+  return payload;
+}
+
 /**
- * Authenticate before Redlisten / proxy. Cron is a separate secret; manual is JWT + space ACL.
+ * Verify manual bearer: exact anon key, JWKS ES256, or HS256 with JWT secret.
+ * Never trust an unsigned / forged payload role alone.
  */
-function authorizeDailyReportRequest(
+async function verifyManualJwtRole(
+  bearer: string,
+  anonKey: string
+): Promise<'anon' | 'authenticated' | null> {
+  if (anonKey && timingSafeEqualString(bearer, anonKey)) {
+    return 'anon';
+  }
+
+  const parts = bearer.split('.');
+  if (parts.length !== 3) return null;
+  const header = parseJwtJson(parts[0]);
+  if (!header || typeof header.alg !== 'string') return null;
+
+  let payload: Record<string, unknown> | null = null;
+
+  if (header.alg === 'ES256') {
+    const keys = await loadJwksKeys();
+    const kid = typeof header.kid === 'string' ? header.kid : undefined;
+    const candidates = kid
+      ? keys.filter((k) => (k as { kid?: string }).kid === kid)
+      : keys.filter((k) => k.kty === 'EC');
+    for (const jwk of candidates.length > 0 ? candidates : keys) {
+      payload = await verifyEs256Jwt(bearer, jwk);
+      if (payload) break;
+    }
+  } else if (header.alg === 'HS256') {
+    const secret =
+      Deno.env.get('SUPABASE_JWT_SECRET')?.trim() || Deno.env.get('JWT_SECRET')?.trim() || '';
+    if (secret) {
+      payload = await verifyHs256Jwt(bearer, secret);
+    }
+  }
+
+  if (!payload) return null;
+  const role = payload.role;
+  if (role === 'authenticated' || role === 'anon') return role;
+  return null;
+}
+
+/**
+ * Authenticate before Redlisten / proxy. Cron is a separate secret; manual is verified JWT + space ACL.
+ */
+async function authorizeDailyReportRequest(
   req: Request,
-  serviceRoleKey: string
-): RequestAuth | Response {
+  serviceRoleKey: string,
+  anonKey: string
+): Promise<RequestAuth | Response> {
   const cronHeader = (req.headers.get('x-cron-secret') ?? '').trim();
   const bearer = bearerFromAuthorization(req.headers.get('Authorization'));
 
@@ -109,8 +245,7 @@ function authorizeDailyReportRequest(
     );
   }
 
-  // Payload role only (unverified). Cron service_role must match the real key above.
-  const role = decodeJwtRole(bearer);
+  const role = await verifyManualJwtRole(bearer, anonKey);
   if (role === 'authenticated') return { kind: 'manual', role: 'authenticated' };
   if (role === 'anon') return { kind: 'manual', role: 'anon' };
 
@@ -559,14 +694,15 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
               redlistenAttempted: data.redlistenAttempted,
             };
           }
-          // Empty body: allow Redlisten fallback only with explicit "no attempt" metadata.
-          // `{}` / `{posts:[]}` without meta is ambiguous — do not re-spend Free credits.
-          const hasExplicitAttemptMeta =
-            typeof data.redlistenAttempted === 'boolean' ||
-            (typeof data.source === 'string' && data.source.length > 0);
+          // Empty body: allow Redlisten fallback only for explicit no-attempt signals.
+          // Unknown `source` values are ambiguous — do not re-spend Free credits.
+          const recognizedNoAttemptSources = new Set(['legacy', 'oauth', 'rss', 'oauth+rss']);
+          const allowRedlistenFallback =
+            data.redlistenAttempted === false ||
+            (typeof data.source === 'string' && recognizedNoAttemptSources.has(data.source));
           const redlistenAlready =
             skipRedlistenOnFallback ||
-            !hasExplicitAttemptMeta ||
+            !allowRedlistenFallback ||
             data.redlistenAttempted === true ||
             (typeof data.source === 'string' && data.source.startsWith('redlisten'));
           if (redlistenAlready) {
@@ -1070,7 +1206,8 @@ Deno.serve(async (req) => {
     }
 
     // Gate Redlisten / proxy spend: auth before body side-effects and feed fetches.
-    const auth = authorizeDailyReportRequest(req, supabaseKey);
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+    const auth = await authorizeDailyReportRequest(req, supabaseKey, anonKey);
     if (auth instanceof Response) return auth;
 
     // Parse request body
