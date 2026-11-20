@@ -44,6 +44,9 @@ export function SpaceDashboardPage() {
   const [weeklyGenerating, setWeeklyGenerating] = useState(false);
   const [monthlyGenerating, setMonthlyGenerating] = useState(false);
   const [creativeStatus, setCreativeStatus] = useState<string | null>(null);
+  /** Invalidate in-flight aggregate runs on navigation / newer same-space starts (A→B→A). */
+  const weeklyRunIdRef = useRef(0);
+  const monthlyRunIdRef = useRef(0);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: sync store with URL slug and load reports
   useEffect(() => {
@@ -89,7 +92,9 @@ export function SpaceDashboardPage() {
     setWeeklyReports([]);
     setMonthlyReports([]);
     setAggError(null);
-    // Clear generation UI so a late settle from the previous space cannot leave buttons stuck.
+    // Bump run ids so a late finally from a prior visit cannot clear a newer run's flag.
+    weeklyRunIdRef.current += 1;
+    monthlyRunIdRef.current += 1;
     setWeeklyGenerating(false);
     setMonthlyGenerating(false);
     setCreativeStatus(null);
@@ -98,41 +103,46 @@ export function SpaceDashboardPage() {
   const handleGenerateAggregate = async (periodType: PeriodType) => {
     if (!space) return;
     const spaceId = space.id;
-    const setGenerating = periodType === 'week' ? setWeeklyGenerating : setMonthlyGenerating;
+    const isWeek = periodType === 'week';
+    const setGenerating = isWeek ? setWeeklyGenerating : setMonthlyGenerating;
+    const runIdRef = isWeek ? weeklyRunIdRef : monthlyRunIdRef;
+    const runId = ++runIdRef.current;
+    const isCurrentRun = () =>
+      runIdRef.current === runId && spaceIdRef.current === spaceId;
     setGenerating(true);
     setAggError(null);
     setCreativeStatus(null);
     try {
       const result = await generateAggregateReport(spaceId, periodType);
-      if (spaceIdRef.current !== spaceId) return;
+      if (!isCurrentRun()) return;
       if (!result.success) {
         setAggError(result.error ?? 'Generation failed');
         return;
       }
       await loadAllAggReports(spaceId);
-      if (spaceIdRef.current !== spaceId) return;
+      if (!isCurrentRun()) return;
 
       if (result.creativeParams && result.creativeParams.concepts.length > 0) {
         const total = result.creativeParams.concepts.length;
         const target = total * 10;
         setCreativeStatus(`Creating images: 0/${target}…`);
         await fillCreativesFromClient(result.creativeParams, (doneConcepts, _totalC, totalImgs) => {
-          if (spaceIdRef.current !== spaceId) return;
+          if (!isCurrentRun()) return;
           setCreativeStatus(
             doneConcepts >= total
               ? null
               : `Creating images: ${totalImgs}/${target} (${doneConcepts}/${total} concepts done)…`
           );
         });
-        if (spaceIdRef.current !== spaceId) return;
+        if (!isCurrentRun()) return;
         setCreativeStatus(null);
       }
     } catch (err) {
-      if (spaceIdRef.current !== spaceId) return;
+      if (!isCurrentRun()) return;
       setAggError(err instanceof Error ? err.message : 'Failed to generate report');
     } finally {
-      // Always clear for this space's run; space-change effect also resets flags on navigation.
-      if (spaceIdRef.current === spaceId) {
+      // Only the latest run for this space/period may clear the generating flag.
+      if (isCurrentRun()) {
         setGenerating(false);
         setCreativeStatus(null);
       }

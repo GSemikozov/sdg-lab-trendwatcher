@@ -86,7 +86,7 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 # Redlisten Free (preferred feed source after Reddit RSS shutdown Nov 2026)
 # Free key at https://app.redlisten.com — no credit card.
 # Over Free quota Redlisten returns 429 until the next UTC month (no auto Pro).
-# We stop further Redlisten batches in that invocation; we do not add a separate app pause.
+# We stop further Redlisten batches for that space only; no separate app-level pause.
 REDLISTEN_API_KEY=
 # Shared secret Edge ↔ Netlify reddit-proxy (required when using the proxy)
 REDDIT_PROXY_SECRET=
@@ -222,11 +222,11 @@ src/
 
 Reddit shut down public RSS (Nov 2026) and blocks unauthenticated JSON from cloud IPs. TrendWatcher uses:
 
-1. **Redlisten Free** (preferred when `REDLISTEN_API_KEY` is set) — `api.redlisten.com/.../new.rss`. No Reddit account. Free: 1,000 requests/month; over quota **Redlisten returns 429 until the next UTC month** — **no auto-upgrade / no auto-charge to Pro**. On 429 we stop further Redlisten batches in that run and recover via legacy paths only.
+1. **Redlisten Free** (preferred when `REDLISTEN_API_KEY` is set) — `api.redlisten.com/.../new.rss`. No Reddit account. Free: 1,000 requests/month; over quota **Redlisten returns 429 until the next UTC month** — **no auto-upgrade / no auto-charge to Pro**. On 429 we stop further Redlisten batches **for that space** (legacy recovery only); later spaces in the same cron invocation may still contact Redlisten. Monthly rejection is upstream enforcement, not an app-level pause.
 2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls; failed/empty batches recover inside the proxy (OAuth **if configured**, else RSS). Requires shared `REDDIT_PROXY_SECRET` (Bearer). Point Supabase Edge `REDDIT_PROXY_URL` at the deployed function. Ambiguous/empty Redlisten proxy outcomes use Edge `skipRedlisten` so Free credits are not spent twice.
 3. **Reddit OAuth / direct JSON** — **optional**. Only if you create a Reddit app and set `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` on **both** Edge and Netlify. Without a Reddit account, rely on Redlisten (+ RSS ladder, currently dead).
 
-**Auth before spend:** manual UI calls send Supabase anon/user JWT and must include `space_id` (active space loaded from DB). pg_cron all-spaces runs must send `x-cron-secret` matching Edge `CRON_SECRET` (see migration `014`).
+**Auth before spend:** manual UI calls send Supabase anon/user JWT and must include `space_id` (active space loaded from DB). pg_cron all-spaces runs send `x-cron-secret` from Vault (`daily_report_cron_secret`) matching Edge `CRON_SECRET` (migration `014`).
 
 Sign up Free (no card): https://app.redlisten.com — set on **Netlify**: `REDLISTEN_API_KEY`, `REDDIT_PROXY_SECRET` (+ optional Reddit OAuth pair); on **Supabase Edge**: those plus `REDDIT_PROXY_URL` and `CRON_SECRET`.
 

@@ -282,14 +282,16 @@ async function fetchViaRedlisten(subreddits: string[]): Promise<RedditPost[]> {
       Authorization: `Bearer ${REDLISTEN_API_KEY}`,
     },
   });
-  const text = await res.text();
-  if (res.status === 429) {
+  // Classify 429 from status alone — body read may fail after quota responses.
+  const status = res.status;
+  const text = await res.text().catch(() => '');
+  if (status === 429) {
     throw new RedlistenQuotaError(
       `Redlisten Free quota exceeded (upstream rejects until next UTC month; no auto-charge to Pro). ${text.slice(0, 160)}`
     );
   }
   if (!res.ok) {
-    throw new Error(`Redlisten r/${joined}: ${res.status} ${text.slice(0, 160)}`);
+    throw new Error(`Redlisten r/${joined}: ${status} ${text.slice(0, 160)}`);
   }
   const posts = parseRssPosts(text, joined);
   console.log(`[reddit] Redlisten parsed ${posts.length} posts for r/${joined}`);

@@ -76,6 +76,17 @@ function buildReportBody(activeSpaceId: string | null, spaces: Space[]): Record<
 
 /** Tracks overlapping generateReport() calls so isGenerating stays true until the last one settles. */
 let generateReportPending = 0;
+/** Bumped on every space navigation — stale in-flight generate/load must not write back. */
+let navigationEpoch = 0;
+/** Monotonic id for generateReport calls; newer same-space runs supersede older refreshes. */
+let generateReportSeq = 0;
+
+/** Test-only: reset module guards between cases. */
+export function __resetStoreGenerationGuardsForTests() {
+  generateReportPending = 0;
+  navigationEpoch = 0;
+  generateReportSeq = 0;
+}
 
 export const useAppStore = create<AppStore>()(
   devtools(
@@ -102,6 +113,7 @@ export const useAppStore = create<AppStore>()(
         },
 
         setActiveSpace: (id: string) => {
+          navigationEpoch += 1;
           set({ activeSpaceId: id, reports: [] });
           get().loadReports();
         },
@@ -109,6 +121,7 @@ export const useAppStore = create<AppStore>()(
         loadReports: async () => {
           const spaceId = get().activeSpaceId;
           if (!spaceId) return;
+          const epochAtStart = navigationEpoch;
 
           const hasCache = get().reports.length > 0;
           if (!hasCache) {
@@ -117,12 +130,17 @@ export const useAppStore = create<AppStore>()(
           set({ error: null });
           try {
             const reports = await reportStorage.getAll(spaceId);
+            if (navigationEpoch !== epochAtStart || get().activeSpaceId !== spaceId) return;
             set({ reports });
           } catch (err) {
-            set({ error: 'Failed to load reports from Supabase' });
+            if (navigationEpoch === epochAtStart && get().activeSpaceId === spaceId) {
+              set({ error: 'Failed to load reports from Supabase' });
+            }
             console.error('loadReports error:', err);
           } finally {
-            set({ isLoading: false });
+            if (navigationEpoch === epochAtStart && get().activeSpaceId === spaceId) {
+              set({ isLoading: false });
+            }
           }
         },
 
@@ -130,6 +148,12 @@ export const useAppStore = create<AppStore>()(
           generateReportPending += 1;
           set({ isGenerating: true, error: null });
           const spaceIdAtStart = get().activeSpaceId;
+          const epochAtStart = navigationEpoch;
+          const seqAtStart = ++generateReportSeq;
+          const stillCurrent = () =>
+            navigationEpoch === epochAtStart &&
+            generateReportSeq === seqAtStart &&
+            get().activeSpaceId === spaceIdAtStart;
           try {
             const { spaces } = get();
             const body = buildReportBody(spaceIdAtStart, spaces);
@@ -140,8 +164,8 @@ export const useAppStore = create<AppStore>()(
             }
 
             const reports = await reportStorage.getAll(spaceIdAtStart ?? undefined);
-            // User may have switched spaces while generation was in flight — don't clobber.
-            if (get().activeSpaceId !== spaceIdAtStart) {
+            // Navigation (incl. A→B→A) or a newer generate superseded this refresh.
+            if (!stillCurrent()) {
               return { success: true };
             }
             set({ reports });
@@ -149,7 +173,7 @@ export const useAppStore = create<AppStore>()(
             return { success: true };
           } catch (err) {
             const message = err instanceof Error ? err.message : 'Failed to generate report';
-            if (get().activeSpaceId === spaceIdAtStart) {
+            if (stillCurrent()) {
               set({ error: message });
             }
             console.error('generateReport error:', err);

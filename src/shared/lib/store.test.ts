@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useAppStore } from './store';
+import { __resetStoreGenerationGuardsForTests, useAppStore } from './store';
 
 const mockSpace = {
   id: 'space-1',
@@ -37,6 +37,9 @@ vi.mock('@shared/api/supabase', () => ({
     functions: {
       invoke: (...args: unknown[]) => mockInvoke(...args),
     },
+    auth: {
+      getSession: vi.fn().mockResolvedValue({ data: { session: null } }),
+    },
   },
 }));
 
@@ -50,6 +53,7 @@ function setActiveSpace() {
 describe('useAppStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetStoreGenerationGuardsForTests();
     useAppStore.setState({
       spaces: [],
       activeSpaceId: null,
@@ -234,6 +238,63 @@ describe('useAppStore', () => {
     resolvers[1]!({ data: { success: true }, error: null });
     await second;
     expect(useAppStore.getState().isGenerating).toBe(false);
+  });
+
+  it('should ignore stale generate refresh after A→B→A navigation', async () => {
+    setActiveSpace();
+    mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
+    let resolveFirstGetAll: (value: unknown[]) => void = () => {};
+    let getAllCalls = 0;
+    const freshA = {
+      id: 'fresh-a',
+      createdAt: new Date().toISOString(),
+      dateRange: { from: '', to: '' },
+      subreddits: ['lonely'],
+      totalPostsAnalyzed: 3,
+      summary: 'Fresh A',
+      signals: [],
+      rawPostCount: { lonely: 3 },
+      spaceId: mockSpace.id,
+    };
+    mockGetAll.mockImplementation(() => {
+      getAllCalls += 1;
+      if (getAllCalls === 1) {
+        return new Promise((resolve) => {
+          resolveFirstGetAll = resolve;
+        });
+      }
+      return Promise.resolve([freshA]);
+    });
+
+    const firstVisitGenerate = useAppStore.getState().generateReport();
+    await vi.waitFor(() => {
+      expect(getAllCalls).toBe(1);
+    });
+
+    // Navigate A → B → A (bumps navigationEpoch); return visit loads fresher reports.
+    useAppStore.getState().setActiveSpace('space-b');
+    useAppStore.getState().setActiveSpace(mockSpace.id);
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().reports[0]?.id).toBe('fresh-a');
+    });
+
+    resolveFirstGetAll([
+      {
+        id: 'stale-a',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 1,
+        summary: 'Stale A',
+        signals: [],
+        rawPostCount: { lonely: 1 },
+        spaceId: mockSpace.id,
+      },
+    ]);
+    await firstVisitGenerate;
+
+    expect(useAppStore.getState().reports).toHaveLength(1);
+    expect(useAppStore.getState().reports[0]?.id).toBe('fresh-a');
   });
 
   it('should keep isGenerating true when the second call settles first', async () => {
