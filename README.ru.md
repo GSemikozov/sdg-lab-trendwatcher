@@ -137,24 +137,36 @@ create policy "Allow all" on public.app_settings for all using (true) with check
 
 ### Настройка pg_cron (Supabase SQL Editor)
 
+All-spaces cron обязан слать `x-cron-secret` (Vault) и gateway `Authorization` Bearer (legacy anon JWT). Предпочтительно применить миграцию `014`; форма расписания:
+
 ```sql
 create extension if not exists pg_cron schema pg_catalog;
 create extension if not exists pg_net;
 
+-- Один раз (SQL editor): значение = Edge CRON_SECRET — не коммитить.
+-- select vault.create_secret('<CRON_SECRET>', 'daily_report_cron_secret', 'pg_cron → daily-report');
+
 select cron.schedule(
   'daily-trendwatcher-report',
   '0 9 * * *',  -- каждый день в 09:00 UTC
-  $$
+  $cmd$
   select net.http_post(
     url := 'https://<project-ref>.supabase.co/functions/v1/daily-report'::text,
-    headers := '{"Content-Type": "application/json"}'::jsonb,
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer <anon-jwt>',
+      'x-cron-secret', coalesce(
+        (select decrypted_secret from vault.decrypted_secrets where name = 'daily_report_cron_secret' limit 1),
+        ''
+      )
+    ),
     body := '{}'::jsonb
   );
-  $$
+  $cmd$
 );
 ```
 
-Когда pg_cron запускается с пустым телом запроса, Edge Function читает сабреддиты и получателей email из таблицы `app_settings` — поэтому изменения, сделанные в UI, автоматически отражаются в ежедневных отчётах.
+Когда pg_cron запускается с пустым телом и валидным cron-секретом, Edge Function обрабатывает все активные space (сабы из БД). Ручные вызовы из UI — anon/user JWT + `space_id`.
 
 ## Архитектура
 

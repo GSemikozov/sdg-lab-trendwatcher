@@ -141,24 +141,36 @@ create policy "Allow all" on public.app_settings for all using (true) with check
 
 ### pg_cron Setup (Supabase SQL Editor)
 
+All-spaces cron must send `x-cron-secret` (Vault) plus a gateway `Authorization` Bearer (legacy anon JWT). Prefer applying migration `014`; the schedule shape is:
+
 ```sql
 create extension if not exists pg_cron schema pg_catalog;
 create extension if not exists pg_net schema extensions;
 
+-- One-time (SQL editor): value must match Edge secret CRON_SECRET — never commit it.
+-- select vault.create_secret('<CRON_SECRET>', 'daily_report_cron_secret', 'pg_cron → daily-report');
+
 select cron.schedule(
   'daily-trendwatcher-report',
   '0 9 * * *',  -- every day at 09:00 UTC
-  $$
+  $cmd$
   select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/daily-report',
-    headers := '{"Content-Type": "application/json"}'::jsonb,
+    url := 'https://<project-ref>.supabase.co/functions/v1/daily-report'::text,
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer <anon-jwt>',
+      'x-cron-secret', coalesce(
+        (select decrypted_secret from vault.decrypted_secrets where name = 'daily_report_cron_secret' limit 1),
+        ''
+      )
+    ),
     body := '{}'::jsonb
   );
-  $$
+  $cmd$
 );
 ```
 
-When pg_cron triggers with an empty body, the Edge Function reads subreddits and email recipients from `app_settings` — so changes made in the UI are reflected in automated daily reports.
+When pg_cron triggers with an empty body and valid cron credentials, the Edge Function processes all active spaces (subreddits from DB). Manual UI calls use anon/user JWT + `space_id` instead.
 
 ## Architecture
 

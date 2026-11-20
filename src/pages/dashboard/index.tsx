@@ -47,6 +47,9 @@ export function SpaceDashboardPage() {
   /** Invalidate in-flight aggregate runs on navigation / newer same-space starts (A→B→A). */
   const weeklyRunIdRef = useRef(0);
   const monthlyRunIdRef = useRef(0);
+  /** Navigation + load sequence so stale loadAllAggReports cannot overwrite newer lists. */
+  const aggNavEpochRef = useRef(0);
+  const aggLoadSeqRef = useRef(0);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: sync store with URL slug and load reports
   useEffect(() => {
@@ -59,6 +62,12 @@ export function SpaceDashboardPage() {
   }, [space?.id]);
 
   const loadAllAggReports = useCallback(async (forSpaceId: string) => {
+    const epochAtStart = aggNavEpochRef.current;
+    const seqAtStart = ++aggLoadSeqRef.current;
+    const isCurrentLoad = () =>
+      aggNavEpochRef.current === epochAtStart &&
+      aggLoadSeqRef.current === seqAtStart &&
+      spaceIdRef.current === forSpaceId;
     setAggLoading(true);
     setAggError(null);
     try {
@@ -66,15 +75,14 @@ export function SpaceDashboardPage() {
         loadAggregateReports(forSpaceId, 'week'),
         loadAggregateReports(forSpaceId, 'month'),
       ]);
-      // Space may have changed while queries were in flight — skip stale writes.
-      if (spaceIdRef.current !== forSpaceId) return;
+      if (!isCurrentLoad()) return;
       setWeeklyReports(weekly);
       setMonthlyReports(monthly);
     } catch (err) {
-      if (spaceIdRef.current !== forSpaceId) return;
+      if (!isCurrentLoad()) return;
       setAggError(err instanceof Error ? err.message : 'Failed to load aggregate reports');
     } finally {
-      if (spaceIdRef.current === forSpaceId) {
+      if (isCurrentLoad()) {
         setAggLoading(false);
       }
     }
@@ -92,7 +100,8 @@ export function SpaceDashboardPage() {
     setWeeklyReports([]);
     setMonthlyReports([]);
     setAggError(null);
-    // Bump run ids so a late finally from a prior visit cannot clear a newer run's flag.
+    // Bump epochs/ids so late settles from a prior visit cannot clear flags or overwrite lists.
+    aggNavEpochRef.current += 1;
     weeklyRunIdRef.current += 1;
     monthlyRunIdRef.current += 1;
     setWeeklyGenerating(false);

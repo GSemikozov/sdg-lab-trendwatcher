@@ -425,6 +425,17 @@ async function fetchAllSubredditsDirect(
           recoverSubs.push(...batch);
         } else {
           posts.push(...batchPosts);
+          // Busy sub can fill the 50-item page; recover requested subs missing from the page.
+          const present = new Set(
+            batchPosts.map((p) => p.subreddit.toLowerCase()).filter(Boolean)
+          );
+          const missing = batch.filter((s) => !present.has(s.toLowerCase()));
+          if (missing.length > 0) {
+            errors.push(
+              `redlisten r/${batch.join('+')}: page omitted ${missing.join('+')}; recovering via OAuth/direct (no Redlisten retry)`
+            );
+            recoverSubs.push(...missing);
+          }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

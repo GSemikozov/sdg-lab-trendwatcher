@@ -316,6 +316,17 @@ export const handler = async (event) => {
             recoverSubs.push(...batch);
           } else {
             allPosts.push(...posts);
+            // Busy sub can fill the 50-item page; recover requested subs missing from the page.
+            const present = new Set(
+              posts.map((p) => String(p.subreddit || '').toLowerCase()).filter(Boolean)
+            );
+            const missing = batch.filter((s) => !present.has(String(s).toLowerCase()));
+            if (missing.length > 0) {
+              errors.push(
+                `redlisten r/${batch.join('+')}: page omitted ${missing.join('+')}; recovering via OAuth/RSS (no Redlisten retry)`
+              );
+              recoverSubs.push(...missing);
+            }
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

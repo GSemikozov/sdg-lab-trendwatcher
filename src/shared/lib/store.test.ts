@@ -223,7 +223,13 @@ describe('useAppStore', () => {
           resolvers.push(resolve);
         })
     );
-    mockGetAll.mockResolvedValue([]);
+    const getAllResolvers: Array<(value: unknown[]) => void> = [];
+    mockGetAll.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          getAllResolvers.push(resolve);
+        })
+    );
 
     const first = useAppStore.getState().generateReport();
     const second = useAppStore.getState().generateReport();
@@ -232,12 +238,45 @@ describe('useAppStore', () => {
     expect(resolvers).toHaveLength(2);
 
     resolvers[0]!({ data: { success: true }, error: null });
+    await vi.waitFor(() => expect(getAllResolvers).toHaveLength(1));
+    resolvers[1]!({ data: { success: true }, error: null });
+    await vi.waitFor(() => expect(getAllResolvers).toHaveLength(2));
+
+    // Older refresh settles first with distinct reports; newer must win.
+    getAllResolvers[0]!([
+      {
+        id: 'older-gen',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 1,
+        summary: 'Older',
+        signals: [],
+        rawPostCount: { lonely: 1 },
+        spaceId: mockSpace.id,
+      },
+    ]);
     await first;
     expect(useAppStore.getState().isGenerating).toBe(true);
+    expect(useAppStore.getState().reports).toHaveLength(0);
 
-    resolvers[1]!({ data: { success: true }, error: null });
+    getAllResolvers[1]!([
+      {
+        id: 'newer-gen',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 2,
+        summary: 'Newer',
+        signals: [],
+        rawPostCount: { lonely: 2 },
+        spaceId: mockSpace.id,
+      },
+    ]);
     await second;
     expect(useAppStore.getState().isGenerating).toBe(false);
+    expect(useAppStore.getState().reports).toHaveLength(1);
+    expect(useAppStore.getState().reports[0]?.id).toBe('newer-gen');
   });
 
   it('should ignore stale generate refresh after A→B→A navigation', async () => {
@@ -297,7 +336,7 @@ describe('useAppStore', () => {
     expect(useAppStore.getState().reports[0]?.id).toBe('fresh-a');
   });
 
-  it('should keep isGenerating true when the second call settles first', async () => {
+  it('should keep newer reports when the older overlap refresh settles last', async () => {
     setActiveSpace();
     const resolvers: Array<(value: { data: { success: boolean }; error: null }) => void> = [];
     mockInvoke.mockImplementation(
@@ -306,7 +345,13 @@ describe('useAppStore', () => {
           resolvers.push(resolve);
         })
     );
-    mockGetAll.mockResolvedValue([]);
+    const getAllResolvers: Array<(value: unknown[]) => void> = [];
+    mockGetAll.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          getAllResolvers.push(resolve);
+        })
+    );
 
     const first = useAppStore.getState().generateReport();
     const second = useAppStore.getState().generateReport();
@@ -314,13 +359,96 @@ describe('useAppStore', () => {
     expect(useAppStore.getState().isGenerating).toBe(true);
     expect(resolvers).toHaveLength(2);
 
-    // Reverse completion order: second settles while first is still pending.
+    // Reverse invoke order: second completes (and refreshes) before first.
     resolvers[1]!({ data: { success: true }, error: null });
+    await vi.waitFor(() => expect(getAllResolvers).toHaveLength(1));
+    getAllResolvers[0]!([
+      {
+        id: 'newer-gen',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 2,
+        summary: 'Newer',
+        signals: [],
+        rawPostCount: { lonely: 2 },
+        spaceId: mockSpace.id,
+      },
+    ]);
     await second;
     expect(useAppStore.getState().isGenerating).toBe(true);
+    expect(useAppStore.getState().reports[0]?.id).toBe('newer-gen');
 
     resolvers[0]!({ data: { success: true }, error: null });
+    await vi.waitFor(() => expect(getAllResolvers).toHaveLength(2));
+    getAllResolvers[1]!([
+      {
+        id: 'older-gen',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 1,
+        summary: 'Older',
+        signals: [],
+        rawPostCount: { lonely: 1 },
+        spaceId: mockSpace.id,
+      },
+    ]);
     await first;
     expect(useAppStore.getState().isGenerating).toBe(false);
+    expect(useAppStore.getState().reports).toHaveLength(1);
+    expect(useAppStore.getState().reports[0]?.id).toBe('newer-gen');
+  });
+
+  it('should not let a late loadReports overwrite generateReport results', async () => {
+    setActiveSpace();
+    let resolveInitialLoad: (value: unknown[]) => void = () => {};
+    let getAllCalls = 0;
+    mockGetAll.mockImplementation(() => {
+      getAllCalls += 1;
+      if (getAllCalls === 1) {
+        return new Promise((resolve) => {
+          resolveInitialLoad = resolve;
+        });
+      }
+      return Promise.resolve([
+        {
+          id: 'after-generate',
+          createdAt: new Date().toISOString(),
+          dateRange: { from: '', to: '' },
+          subreddits: ['lonely'],
+          totalPostsAnalyzed: 5,
+          summary: 'Generated',
+          signals: [],
+          rawPostCount: { lonely: 5 },
+          spaceId: mockSpace.id,
+        },
+      ]);
+    });
+    mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
+
+    const loadPromise = useAppStore.getState().loadReports();
+    await vi.waitFor(() => expect(getAllCalls).toBe(1));
+
+    await useAppStore.getState().generateReport();
+    expect(useAppStore.getState().reports[0]?.id).toBe('after-generate');
+
+    resolveInitialLoad([
+      {
+        id: 'stale-initial',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 1,
+        summary: 'Stale load',
+        signals: [],
+        rawPostCount: { lonely: 1 },
+        spaceId: mockSpace.id,
+      },
+    ]);
+    await loadPromise;
+
+    expect(useAppStore.getState().reports).toHaveLength(1);
+    expect(useAppStore.getState().reports[0]?.id).toBe('after-generate');
   });
 });

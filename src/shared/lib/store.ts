@@ -78,14 +78,18 @@ function buildReportBody(activeSpaceId: string | null, spaces: Space[]): Record<
 let generateReportPending = 0;
 /** Bumped on every space navigation — stale in-flight generate/load must not write back. */
 let navigationEpoch = 0;
-/** Monotonic id for generateReport calls; newer same-space runs supersede older refreshes. */
-let generateReportSeq = 0;
+/**
+ * Shared reports-write freshness for loadReports + generateReport.
+ * Bumped on navigation and when generation starts so a late initial load cannot
+ * overwrite a newer generate refresh (and older generates lose to newer ones).
+ */
+let reportsFreshness = 0;
 
 /** Test-only: reset module guards between cases. */
 export function __resetStoreGenerationGuardsForTests() {
   generateReportPending = 0;
   navigationEpoch = 0;
-  generateReportSeq = 0;
+  reportsFreshness = 0;
 }
 
 export const useAppStore = create<AppStore>()(
@@ -114,6 +118,7 @@ export const useAppStore = create<AppStore>()(
 
         setActiveSpace: (id: string) => {
           navigationEpoch += 1;
+          reportsFreshness += 1;
           set({ activeSpaceId: id, reports: [] });
           get().loadReports();
         },
@@ -122,6 +127,7 @@ export const useAppStore = create<AppStore>()(
           const spaceId = get().activeSpaceId;
           if (!spaceId) return;
           const epochAtStart = navigationEpoch;
+          const freshnessAtStart = reportsFreshness;
 
           const hasCache = get().reports.length > 0;
           if (!hasCache) {
@@ -130,15 +136,29 @@ export const useAppStore = create<AppStore>()(
           set({ error: null });
           try {
             const reports = await reportStorage.getAll(spaceId);
-            if (navigationEpoch !== epochAtStart || get().activeSpaceId !== spaceId) return;
+            if (
+              navigationEpoch !== epochAtStart ||
+              reportsFreshness !== freshnessAtStart ||
+              get().activeSpaceId !== spaceId
+            ) {
+              return;
+            }
             set({ reports });
           } catch (err) {
-            if (navigationEpoch === epochAtStart && get().activeSpaceId === spaceId) {
+            if (
+              navigationEpoch === epochAtStart &&
+              reportsFreshness === freshnessAtStart &&
+              get().activeSpaceId === spaceId
+            ) {
               set({ error: 'Failed to load reports from Supabase' });
             }
             console.error('loadReports error:', err);
           } finally {
-            if (navigationEpoch === epochAtStart && get().activeSpaceId === spaceId) {
+            if (
+              navigationEpoch === epochAtStart &&
+              reportsFreshness === freshnessAtStart &&
+              get().activeSpaceId === spaceId
+            ) {
               set({ isLoading: false });
             }
           }
@@ -146,13 +166,15 @@ export const useAppStore = create<AppStore>()(
 
         generateReport: async () => {
           generateReportPending += 1;
+          // Invalidate any in-flight loadReports for this space before we refresh.
+          reportsFreshness += 1;
           set({ isGenerating: true, error: null });
           const spaceIdAtStart = get().activeSpaceId;
           const epochAtStart = navigationEpoch;
-          const seqAtStart = ++generateReportSeq;
+          const freshnessAtStart = reportsFreshness;
           const stillCurrent = () =>
             navigationEpoch === epochAtStart &&
-            generateReportSeq === seqAtStart &&
+            reportsFreshness === freshnessAtStart &&
             get().activeSpaceId === spaceIdAtStart;
           try {
             const { spaces } = get();
@@ -164,7 +186,7 @@ export const useAppStore = create<AppStore>()(
             }
 
             const reports = await reportStorage.getAll(spaceIdAtStart ?? undefined);
-            // Navigation (incl. A→B→A) or a newer generate superseded this refresh.
+            // Navigation (incl. A→B→A), a newer generate, or load invalidation superseded this.
             if (!stillCurrent()) {
               return { success: true };
             }
