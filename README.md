@@ -8,7 +8,7 @@ Internal signal intelligence tool that analyzes Reddit discussions daily, identi
 
 Every day at 09:00 UTC, a Supabase pg_cron job triggers an Edge Function that:
 
-1. **Fetches** recent posts from configured subreddits via Redlisten Free RSS (batched through Netlify `reddit-proxy`), with optional OAuth/direct fallbacks
+1. **Fetches** recent posts from configured subreddits via Redlisten Free RSS (batched through authenticated Netlify `reddit-proxy`). Legacy Reddit OAuth/direct is used when `REDLISTEN_API_KEY` is absent, or as per-sub recovery after a failed/empty Redlisten batch
 2. **Analyzes** posts through OpenAI gpt-4o-mini with a structured prompt tuned for actionable signal extraction
 3. **Structures** output into 4 signal categories: emerging topics, growing trends, pain points, product hypotheses
 4. **Saves** the report to Supabase PostgreSQL
@@ -86,8 +86,10 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 # Redlisten Free (preferred feed source after Reddit RSS shutdown Nov 2026)
 # Free key at https://app.redlisten.com — no credit card. Over quota → pause until next UTC month (no auto Pro).
 REDLISTEN_API_KEY=
+# Shared secret Edge ↔ Netlify reddit-proxy (required when using the proxy)
+REDDIT_PROXY_SECRET=
 
-# Reddit OAuth (optional legacy — not required)
+# Reddit OAuth (optional legacy when Redlisten absent / batch recovery)
 REDDIT_CLIENT_ID=
 REDDIT_CLIENT_SECRET=
 
@@ -212,11 +214,11 @@ src/
 
 Reddit shut down public RSS (Nov 2026) and blocks unauthenticated JSON from cloud IPs. TrendWatcher uses:
 
-1. **Redlisten Free** (preferred) — `api.redlisten.com/.../new.rss` with `REDLISTEN_API_KEY`. No Reddit account. Free: 1,000 requests/month; over quota pauses until the next UTC month — **no auto-upgrade / no auto-charge to Pro**.
-2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls to stay under Free quota.
-3. **Reddit OAuth / direct JSON** — optional legacy paths if credentials exist.
+1. **Redlisten Free** (preferred when `REDLISTEN_API_KEY` is set) — `api.redlisten.com/.../new.rss`. No Reddit account. Free: 1,000 requests/month; over quota pauses until the next UTC month — **no auto-upgrade / no auto-charge to Pro**.
+2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls. Requires shared `REDDIT_PROXY_SECRET` (Bearer) from Edge → proxy so public callers cannot burn Free credits.
+3. **Reddit OAuth / direct JSON** — used when `REDLISTEN_API_KEY` is **absent**, and as per-sub recovery after a failed/empty Redlisten batch (without re-spending Redlisten credits). Not a silent always-on parallel path.
 
-Sign up Free (no card): https://app.redlisten.com — set the same key on Netlify and Supabase Edge secrets.
+Sign up Free (no card): https://app.redlisten.com — set `REDLISTEN_API_KEY` + matching `REDDIT_PROXY_SECRET` on Netlify and Supabase Edge secrets.
 
 ### AI Analysis: Why LLM, Not Embeddings
 

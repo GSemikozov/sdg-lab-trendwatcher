@@ -1,6 +1,14 @@
 // Netlify Function: reddit-proxy
 // Fetches Reddit listings and returns normalized posts.
 //
+// Auth: requires server-to-server credential before any feed fetch that can spend
+// Redlisten Free credits. Callers (Edge daily-report) must send:
+//   Authorization: Bearer <REDDIT_PROXY_SECRET>
+// or header X-Reddit-Proxy-Secret: <REDDIT_PROXY_SECRET>
+// Unauthenticated public calls get 401 and never touch REDLISTEN_API_KEY.
+
+import { timingSafeEqual } from 'node:crypto';
+//
 // Primary path (no Reddit account): Redlisten Free RSS mirror
 //   REDLISTEN_API_KEY → api.redlisten.com (Atom, same layout as old reddit.com RSS)
 // Free plan: 1,000 req/month, 50 items/page. Quota exhaustion → 429 pause until next
@@ -15,6 +23,33 @@ const USER_AGENT = 'web:TrendWatcherNetlifyProxy:v1.0 (by /u/sdglab)';
 const REDLISTEN_BASE = 'https://api.redlisten.com';
 // Free plan page size is 50; keep multi-sub batches modest for URL length + mix.
 const REDLISTEN_BATCH_SIZE = 8;
+
+function timingSafeEqualString(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
+}
+
+function extractProxySecret(event) {
+  const headers = event.headers || {};
+  const authHeader = headers.authorization || headers.Authorization || '';
+  if (typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  const dedicated =
+    headers['x-reddit-proxy-secret'] || headers['X-Reddit-Proxy-Secret'] || '';
+  return typeof dedicated === 'string' ? dedicated.trim() : '';
+}
+
+function unauthorized(message) {
+  return {
+    statusCode: 401,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ error: message }),
+  };
+}
 
 /**
  * Parse Reddit/Redlisten RSS/Atom XML into normalized posts.
@@ -194,6 +229,19 @@ function chunk(arr, size) {
 
 export const handler = async (event) => {
   try {
+    const expectedSecret = process.env.REDDIT_PROXY_SECRET;
+    if (!expectedSecret) {
+      // Fail closed: without a shared secret we must not spend Redlisten quota
+      // for arbitrary internet callers.
+      return unauthorized(
+        'REDDIT_PROXY_SECRET is not configured on Netlify; refusing unauthenticated feed fetch'
+      );
+    }
+    const provided = extractProxySecret(event);
+    if (!provided || !timingSafeEqualString(provided, expectedSecret)) {
+      return unauthorized('Missing or invalid reddit-proxy credentials');
+    }
+
     const subParam = event.queryStringParameters?.subreddits || '';
     const subreddits = subParam
       .split(',')

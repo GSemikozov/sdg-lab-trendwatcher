@@ -17,6 +17,7 @@ const MAX_POSTS = 100;
 const PERIOD_HOURS = 48;
 const USER_AGENT = 'web:TrendWatcher:v1.0 (by /u/sdglab)';
 const REDDIT_PROXY_URL = Deno.env.get('REDDIT_PROXY_URL');
+const REDDIT_PROXY_SECRET = Deno.env.get('REDDIT_PROXY_SECRET');
 const REDLISTEN_API_KEY = Deno.env.get('REDLISTEN_API_KEY');
 /** Free plan: 1k req/mo — batch subs into one Atom call when possible. */
 const REDLISTEN_BATCH_SIZE = 8;
@@ -202,12 +203,7 @@ async function fetchViaRedlisten(subreddits: string[]): Promise<RedditPost[]> {
   return posts;
 }
 
-async function fetchViaRss(subreddit: string): Promise<RedditPost[]> {
-  // Prefer Redlisten Free when configured (no Reddit account / OAuth).
-  if (REDLISTEN_API_KEY) {
-    return fetchViaRedlisten([subreddit]);
-  }
-
+async function fetchViaRedditPublicRss(subreddit: string): Promise<RedditPost[]> {
   // Reddit shut down public RSS (Nov 2026). Ladder kept for completeness.
   const urls = [
     `${REDDIT_BASE}/r/${subreddit}/.rss`,
@@ -244,7 +240,20 @@ async function fetchViaRss(subreddit: string): Promise<RedditPost[]> {
   );
 }
 
-async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<RedditPost[]> {
+async function fetchViaRss(subreddit: string, opts?: { skipRedlisten?: boolean }): Promise<RedditPost[]> {
+  // Prefer Redlisten Free when configured — unless recovering after a failed batch
+  // (skipRedlisten) so we do not burn more Free credits on the same failure mode.
+  if (REDLISTEN_API_KEY && !opts?.skipRedlisten) {
+    return fetchViaRedlisten([subreddit]);
+  }
+  return fetchViaRedditPublicRss(subreddit);
+}
+
+async function fetchSubreddit(
+  subreddit: string,
+  oauthToken?: string,
+  opts?: { skipRedlisten?: boolean }
+): Promise<RedditPost[]> {
   if (oauthToken) {
     console.log(`[reddit] r/${subreddit}: trying OAuth`);
     try {
@@ -269,7 +278,7 @@ async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<R
   }
 
   console.log(`[reddit] r/${subreddit}: trying RSS fallback`);
-  const posts = await fetchViaRss(subreddit);
+  const posts = await fetchViaRss(subreddit, opts);
   console.log(`[reddit] r/${subreddit}: RSS OK, ${posts.length} posts`);
   return posts;
 }
@@ -299,16 +308,43 @@ async function fetchAllSubredditsDirect(
   if (REDLISTEN_API_KEY) {
     const errors: string[] = [];
     const posts: RedditPost[] = [];
+    const recoverSubs: string[] = [];
     for (let i = 0; i < subreddits.length; i += REDLISTEN_BATCH_SIZE) {
       const batch = subreddits.slice(i, i + REDLISTEN_BATCH_SIZE);
       try {
-        posts.push(...(await fetchViaRedlisten(batch)));
+        const batchPosts = await fetchViaRedlisten(batch);
+        if (batchPosts.length === 0) {
+          errors.push(`redlisten r/${batch.join('+')}: empty feed; recovering via OAuth/direct`);
+          recoverSubs.push(...batch);
+        } else {
+          posts.push(...batchPosts);
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`redlisten r/${batch.join('+')}: ${msg}`);
+        errors.push(`redlisten r/${batch.join('+')}: ${msg}; recovering via OAuth/direct`);
         console.error('[reddit] Redlisten batch failed:', err);
+        recoverSubs.push(...batch);
       }
     }
+
+    // Per-sub legacy recovery for failed/empty batches (skip Redlisten to avoid
+    // spending more Free credits on the same failure). Needs OAuth/direct to help.
+    if (recoverSubs.length > 0) {
+      const recovery = await Promise.allSettled(
+        recoverSubs.map((sub) => fetchSubreddit(sub, oauthToken, { skipRedlisten: true }))
+      );
+      for (let i = 0; i < recovery.length; i++) {
+        const r = recovery[i];
+        if (r.status === 'fulfilled') {
+          posts.push(...r.value);
+        } else {
+          const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+          errors.push(`r/${recoverSubs[i]} recovery: ${msg}`);
+          console.error(`[reddit] r/${recoverSubs[i]} recovery failed:`, r.reason);
+        }
+      }
+    }
+
     return { posts, errors };
   }
 
@@ -333,27 +369,37 @@ async function fetchAllSubredditsDirect(
 async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
   // Prefer proxy when configured (Netlify hosts Redlisten key in production).
   if (REDDIT_PROXY_URL) {
-    const url = `${REDDIT_PROXY_URL}?subreddits=${encodeURIComponent(subreddits.join(','))}`;
-    console.log('[reddit] Using external proxy for subreddits:', subreddits.join(', '));
-    try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        console.error(`[reddit] proxy HTTP ${res.status}: ${text.slice(0, 200)}`);
-      } else {
-        const data = (await res.json()) as { posts: RedditPost[]; errors?: string[] };
-        const errors = data.errors ?? [];
-        if (errors.length > 0) {
-          for (const e of errors) console.error('[reddit-proxy]', e);
+    if (!REDDIT_PROXY_SECRET) {
+      console.warn(
+        '[reddit] REDDIT_PROXY_URL set but REDDIT_PROXY_SECRET missing; skipping proxy (auth required)'
+      );
+    } else {
+      const url = `${REDDIT_PROXY_URL}?subreddits=${encodeURIComponent(subreddits.join(','))}`;
+      console.log('[reddit] Using external proxy for subreddits:', subreddits.join(', '));
+      try {
+        const res = await fetch(url, {
+          headers: {
+            'User-Agent': USER_AGENT,
+            Accept: 'application/json',
+            Authorization: `Bearer ${REDDIT_PROXY_SECRET}`,
+          },
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          console.error(`[reddit] proxy HTTP ${res.status}: ${text.slice(0, 200)}`);
+        } else {
+          const data = (await res.json()) as { posts: RedditPost[]; errors?: string[] };
+          const errors = data.errors ?? [];
+          if (errors.length > 0) {
+            for (const e of errors) console.error('[reddit-proxy]', e);
+          }
+          const posts = data.posts ?? [];
+          if (posts.length > 0) return { posts, errors };
+          console.warn('[reddit] proxy returned 0 posts; falling back to direct/Redlisten/OAuth');
         }
-        const posts = data.posts ?? [];
-        if (posts.length > 0) return { posts, errors };
-        console.warn('[reddit] proxy returned 0 posts; falling back to direct/Redlisten/OAuth');
+      } catch (err) {
+        console.error('[reddit] proxy failed, falling back:', err);
       }
-    } catch (err) {
-      console.error('[reddit] proxy failed, falling back:', err);
     }
   }
 
