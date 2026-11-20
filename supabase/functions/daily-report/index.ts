@@ -166,18 +166,41 @@ function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
 }
 
 async function fetchViaRss(subreddit: string): Promise<RedditPost[]> {
-  const url = `${REDDIT_BASE}/r/${subreddit}/hot.rss`;
-  console.log(`[reddit] Trying RSS for r/${subreddit}`);
+  // Reddit shut down public RSS (Nov 2026). Keep a short URL ladder for any
+  // residual/compatible mirrors; expect 404 from www.reddit.com itself.
+  const urls = [
+    `${REDDIT_BASE}/r/${subreddit}/.rss`,
+    `${REDDIT_BASE}/r/${subreddit}/hot/.rss`,
+    `${REDDIT_BASE}/r/${subreddit}/hot.rss`,
+  ];
 
-  const res = await fetch(url, {
-    headers: { 'User-Agent': `${USER_AGENT} RSS`, Accept: 'application/atom+xml,application/xml' },
-  });
-  if (!res.ok) throw new Error(`RSS fetch r/${subreddit}: ${res.status}`);
+  const errors: string[] = [];
+  for (const url of urls) {
+    console.log(`[reddit] Trying RSS for r/${subreddit}: ${url}`);
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': `${USER_AGENT} RSS`,
+          Accept: 'application/atom+xml,application/xml',
+        },
+      });
+      if (!res.ok) {
+        errors.push(`${url} → ${res.status}`);
+        continue;
+      }
+      const xml = await res.text();
+      const posts = parseRssPosts(xml, subreddit);
+      console.log(`[reddit] r/${subreddit}: RSS parsed ${posts.length} posts from ${url}`);
+      if (posts.length > 0) return posts;
+      errors.push(`${url} → empty feed`);
+    } catch (err) {
+      errors.push(`${url} → ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
-  const xml = await res.text();
-  const posts = parseRssPosts(xml, subreddit);
-  console.log(`[reddit] r/${subreddit}: RSS parsed ${posts.length} posts`);
-  return posts;
+  throw new Error(
+    `RSS fetch r/${subreddit} failed (Reddit public RSS shut down Nov 2026). ${errors.join('; ')}`
+  );
 }
 
 async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<RedditPost[]> {
@@ -224,26 +247,10 @@ interface PostEmbeddingPayload {
   embedding: number[];
 }
 
-async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
-  // If proxy is configured, delegate fetching to it (e.g. Netlify Function) to avoid IP blocking.
-  if (REDDIT_PROXY_URL) {
-    const url = `${REDDIT_PROXY_URL}?subreddits=${encodeURIComponent(subreddits.join(','))}`;
-    console.log('[reddit] Using external proxy for subreddits:', subreddits.join(', '));
-    const res = await fetch(url, {
-      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Reddit proxy error ${res.status}: ${text.slice(0, 200)}`);
-    }
-    const data = (await res.json()) as { posts: RedditPost[]; errors?: string[] };
-    const errors = data.errors ?? [];
-    if (errors.length > 0) {
-      for (const e of errors) console.error('[reddit-proxy]', e);
-    }
-    return { posts: data.posts ?? [], errors };
-  }
-
+async function fetchAllSubredditsDirect(
+  subreddits: string[],
+  oauthToken?: string
+): Promise<FetchResult> {
   const results = await Promise.allSettled(
     subreddits.map((sub) => fetchSubreddit(sub, oauthToken))
   );
@@ -260,6 +267,44 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
 
   const posts = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
   return { posts, errors };
+}
+
+async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
+  // Prefer proxy when configured (Netlify IPs historically avoided Reddit blocks).
+  // After Reddit shut down public RSS (Nov 2026), the proxy often returns 0 posts —
+  // fall through to OAuth/direct so configured credentials still work.
+  if (REDDIT_PROXY_URL) {
+    const url = `${REDDIT_PROXY_URL}?subreddits=${encodeURIComponent(subreddits.join(','))}`;
+    console.log('[reddit] Using external proxy for subreddits:', subreddits.join(', '));
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        console.error(`[reddit] proxy HTTP ${res.status}: ${text.slice(0, 200)}`);
+      } else {
+        const data = (await res.json()) as { posts: RedditPost[]; errors?: string[] };
+        const errors = data.errors ?? [];
+        if (errors.length > 0) {
+          for (const e of errors) console.error('[reddit-proxy]', e);
+        }
+        const posts = data.posts ?? [];
+        if (posts.length > 0) return { posts, errors };
+        console.warn('[reddit] proxy returned 0 posts; falling back to OAuth/direct/RSS');
+      }
+    } catch (err) {
+      console.error('[reddit] proxy failed, falling back:', err);
+    }
+  }
+
+  const direct = await fetchAllSubredditsDirect(subreddits, oauthToken);
+  if (direct.posts.length === 0 && !oauthToken) {
+    direct.errors.push(
+      'No Reddit posts fetched. Public RSS was shut down (Nov 2026) and unauthenticated .json is blocked. Set REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET Edge Function secrets.'
+    );
+  }
+  return direct;
 }
 
 async function upsertPostEmbeddings(

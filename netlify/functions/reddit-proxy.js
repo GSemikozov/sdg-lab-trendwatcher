@@ -1,13 +1,16 @@
 // Netlify Function: reddit-proxy
-// Lightweight proxy that fetches public Reddit RSS feeds from Netlify's IPs
-// and returns normalized posts for a list of subreddits.
+// Fetches Reddit listings from Netlify IPs and returns normalized posts.
+// Prefers OAuth (REDDIT_CLIENT_ID/SECRET) because public RSS shut down Nov 2026
+// and unauthenticated .json is blocked.
+
+const PERIOD_HOURS = 48;
+const MAX_POSTS = 100;
+const USER_AGENT = 'web:TrendWatcherNetlifyProxy:v1.0 (by /u/sdglab)';
 
 /**
- * Parse Reddit RSS XML into a list of normalized posts.
- * Mirrors the shape expected by the Supabase Edge Function.
+ * Parse Reddit RSS/Atom XML into normalized posts.
  */
 function parseRssPosts(xml, subreddit) {
-  const PERIOD_HOURS = 48;
   const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
   const posts = [];
 
@@ -62,10 +65,86 @@ function parseRssPosts(xml, subreddit) {
   return posts;
 }
 
+function parseListingJson(json, subreddit) {
+  const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
+  const children = json?.data?.children ?? [];
+  return children
+    .map((c) => c.data)
+    .filter((p) => p && p.created_utc > cutoff)
+    .map((p) => ({
+      id: p.id,
+      title: p.title || '',
+      selftext: (p.selftext || '').slice(0, 500),
+      score: p.score || 0,
+      num_comments: p.num_comments || 0,
+      subreddit: p.subreddit || subreddit,
+      created_utc: p.created_utc,
+      permalink: p.permalink || '',
+    }));
+}
+
+async function getOAuthToken(clientId, clientSecret) {
+  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const res = await fetch('https://www.reddit.com/api/v1/access_token', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${credentials}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': USER_AGENT,
+    },
+    body: 'grant_type=client_credentials',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`OAuth ${res.status} ${text.slice(0, 120)}`);
+  }
+  const data = await res.json();
+  return data.access_token;
+}
+
+async function fetchViaOAuth(subreddit, token) {
+  const url = `https://oauth.reddit.com/r/${subreddit}/hot.json?limit=${MAX_POSTS}&raw_json=1`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'User-Agent': USER_AGENT,
+      Accept: 'application/json',
+    },
+  });
+  if (!res.ok) throw new Error(`OAuth fetch ${res.status}`);
+  return parseListingJson(await res.json(), subreddit);
+}
+
+async function fetchViaRss(subreddit) {
+  const REDDIT_BASE = 'https://www.reddit.com';
+  const urls = [
+    `${REDDIT_BASE}/r/${subreddit}/.rss`,
+    `${REDDIT_BASE}/r/${subreddit}/hot/.rss`,
+    `${REDDIT_BASE}/r/${subreddit}/hot.rss`,
+  ];
+  const errors = [];
+  for (const url of urls) {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'application/atom+xml,application/xml',
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      errors.push(`${url} → ${res.status} ${text.slice(0, 80)}`);
+      continue;
+    }
+    const posts = parseRssPosts(await res.text(), subreddit);
+    if (posts.length > 0) return { posts, errors };
+    errors.push(`${url} → empty`);
+  }
+  return { posts: [], errors };
+}
+
 exports.handler = async (event) => {
   try {
-    const REDDIT_BASE = 'https://www.reddit.com';
-    const subParam = event.queryStringParameters.subreddits || '';
+    const subParam = event.queryStringParameters?.subreddits || '';
     const subreddits = subParam
       .split(',')
       .map((s) => s.trim())
@@ -81,26 +160,32 @@ exports.handler = async (event) => {
 
     const errors = [];
     const allPosts = [];
+    const clientId = process.env.REDDIT_CLIENT_ID;
+    const clientSecret = process.env.REDDIT_CLIENT_SECRET;
+    let oauthToken = null;
+
+    if (clientId && clientSecret) {
+      try {
+        oauthToken = await getOAuthToken(clientId, clientSecret);
+      } catch (err) {
+        errors.push(`oauth: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      errors.push(
+        'oauth: REDDIT_CLIENT_ID/SECRET not set on Netlify (required after Reddit RSS shutdown Nov 2026)'
+      );
+    }
 
     for (const subreddit of subreddits) {
-      const url = `${REDDIT_BASE}/r/${subreddit}/hot.rss`;
       try {
-        const res = await fetch(url, {
-          headers: {
-            'User-Agent': 'web:TrendWatcherNetlifyProxy:v1.0 (by /u/sdglab)',
-            Accept: 'application/atom+xml,application/xml',
-          },
-        });
-
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          errors.push(`r/${subreddit}: RSS ${res.status} ${text.slice(0, 120)}`);
+        if (oauthToken) {
+          const posts = await fetchViaOAuth(subreddit, oauthToken);
+          allPosts.push(...posts);
           continue;
         }
-
-        const xml = await res.text();
-        const posts = parseRssPosts(xml, subreddit);
+        const { posts, errors: rssErrors } = await fetchViaRss(subreddit);
         allPosts.push(...posts);
+        errors.push(...rssErrors.map((e) => `r/${subreddit}: ${e}`));
       } catch (err) {
         errors.push(`r/${subreddit}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -119,4 +204,3 @@ exports.handler = async (event) => {
     };
   }
 };
-
