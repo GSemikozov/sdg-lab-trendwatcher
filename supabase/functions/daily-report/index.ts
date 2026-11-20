@@ -4,18 +4,253 @@
  * Triggered by pg_cron (daily) or manual HTTP call.
  * Supports multi-space: each space has its own subreddits, recipients, and domain prompt.
  *
- * Manual call: POST with { space_id, subreddits?, emailRecipients? }
+ * Auth (before any Redlisten / reddit-proxy spend):
+ * - Cron / all-spaces: `x-cron-secret` or Bearer must match Edge `CRON_SECRET`,
+ *   or Bearer must equal the service-role key (timing-safe compare).
+ * - Manual: cryptographically verified JWT (JWKS ES256 and/or Edge `JWT_SECRET` HS256)
+ *   with role `anon`|`authenticated` and valid `exp`, OR Bearer exactly equal to
+ *   `SUPABASE_ANON_KEY` (legacy anon JWT as shared secret).
+ *   Deploy may use `--no-verify-jwt` so cron can send x-cron-secret; the handler
+ *   still verifies manual callers before Redlisten spend. Forged payload-only JWTs
+ *   are rejected.
+ *
+ * Manual call: POST with { space_id, emailRecipients? } — subreddits come from DB.
  * Cron call: POST with empty body → processes ALL active spaces sequentially.
  */
 
 const REDDIT_BASE = 'https://www.reddit.com';
 const REDDIT_OAUTH_BASE = 'https://oauth.reddit.com';
+const REDLISTEN_BASE = 'https://api.redlisten.com';
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const BREVO_BASE = 'https://api.brevo.com/v3';
 const MAX_POSTS = 100;
 const PERIOD_HOURS = 48;
 const USER_AGENT = 'web:TrendWatcher:v1.0 (by /u/sdglab)';
 const REDDIT_PROXY_URL = Deno.env.get('REDDIT_PROXY_URL');
+const REDDIT_PROXY_SECRET = Deno.env.get('REDDIT_PROXY_SECRET');
+const REDLISTEN_API_KEY = Deno.env.get('REDLISTEN_API_KEY');
+const CRON_SECRET = Deno.env.get('CRON_SECRET');
+/** Free plan: 1k req/mo — batch subs into one Atom call when possible. */
+const REDLISTEN_BATCH_SIZE = 8;
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers':
+    'authorization, x-client-info, apikey, content-type, x-cron-secret',
+};
+
+class RedlistenQuotaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RedlistenQuotaError';
+  }
+}
+
+function timingSafeEqualString(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return mismatch === 0;
+}
+
+function bearerFromAuthorization(header: string | null): string {
+  if (!header) return '';
+  const m = header.match(/^Bearer\s+(.+)$/i);
+  return m?.[1]?.trim() ?? '';
+}
+
+type RequestAuth =
+  | { kind: 'cron' }
+  | { kind: 'manual'; role: 'anon' | 'authenticated' };
+
+function jsonError(status: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
+function base64UrlToBytes(input: string): Uint8Array {
+  const padded = input + '='.repeat((4 - (input.length % 4)) % 4);
+  const bin = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function parseJwtJson(part: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(new TextDecoder().decode(base64UrlToBytes(part))) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function jwtNotExpired(payload: Record<string, unknown>): boolean {
+  const exp = payload.exp;
+  if (typeof exp !== 'number') return true; // legacy anon JWTs may omit exp
+  return exp * 1000 > Date.now();
+}
+
+async function loadJwksKeys(): Promise<JsonWebKey[]> {
+  const fromEnv = Deno.env.get('SUPABASE_JWKS')?.trim();
+  if (fromEnv) {
+    try {
+      const parsed = JSON.parse(fromEnv) as { keys?: JsonWebKey[] } | JsonWebKey[];
+      const keys = Array.isArray(parsed) ? parsed : parsed.keys;
+      if (Array.isArray(keys) && keys.length > 0) return keys;
+    } catch {
+      /* fall through to network JWKS */
+    }
+  }
+  const base = Deno.env.get('SUPABASE_URL')?.replace(/\/$/, '');
+  if (!base) return [];
+  try {
+    const res = await fetch(`${base}/auth/v1/.well-known/jwks.json`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { keys?: JsonWebKey[] };
+    return Array.isArray(data.keys) ? data.keys : [];
+  } catch {
+    return [];
+  }
+}
+
+async function verifyHs256Jwt(
+  token: string,
+  secret: string
+): Promise<Record<string, unknown> | null> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sigB64] = parts;
+  const header = parseJwtJson(headerB64);
+  if (!header || header.alg !== 'HS256') return null;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
+  );
+  const ok = await crypto.subtle.verify(
+    'HMAC',
+    key,
+    base64UrlToBytes(sigB64),
+    new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+  );
+  if (!ok) return null;
+  const payload = parseJwtJson(payloadB64);
+  if (!payload || !jwtNotExpired(payload)) return null;
+  return payload;
+}
+
+async function verifyEs256Jwt(
+  token: string,
+  jwk: JsonWebKey
+): Promise<Record<string, unknown> | null> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sigB64] = parts;
+  const header = parseJwtJson(headerB64);
+  if (!header || header.alg !== 'ES256') return null;
+  const key = await crypto.subtle.importKey(
+    'jwk',
+    jwk,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['verify']
+  );
+  const ok = await crypto.subtle.verify(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    key,
+    base64UrlToBytes(sigB64),
+    new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+  );
+  if (!ok) return null;
+  const payload = parseJwtJson(payloadB64);
+  if (!payload || !jwtNotExpired(payload)) return null;
+  return payload;
+}
+
+/**
+ * Verify manual bearer: exact anon key, JWKS ES256, or HS256 with JWT secret.
+ * Never trust an unsigned / forged payload role alone.
+ */
+async function verifyManualJwtRole(
+  bearer: string,
+  anonKey: string
+): Promise<'anon' | 'authenticated' | null> {
+  if (anonKey && timingSafeEqualString(bearer, anonKey)) {
+    return 'anon';
+  }
+
+  const parts = bearer.split('.');
+  if (parts.length !== 3) return null;
+  const header = parseJwtJson(parts[0]);
+  if (!header || typeof header.alg !== 'string') return null;
+
+  let payload: Record<string, unknown> | null = null;
+
+  if (header.alg === 'ES256') {
+    const keys = await loadJwksKeys();
+    const kid = typeof header.kid === 'string' ? header.kid : undefined;
+    const candidates = kid
+      ? keys.filter((k) => (k as { kid?: string }).kid === kid)
+      : keys.filter((k) => k.kty === 'EC');
+    for (const jwk of candidates.length > 0 ? candidates : keys) {
+      payload = await verifyEs256Jwt(bearer, jwk);
+      if (payload) break;
+    }
+  } else if (header.alg === 'HS256') {
+    // Edge forbids custom secrets named SUPABASE_*; use JWT_SECRET (= legacy JWT secret).
+    const secret = Deno.env.get('JWT_SECRET')?.trim() || '';
+    if (secret) {
+      payload = await verifyHs256Jwt(bearer, secret);
+    }
+  }
+
+  if (!payload) return null;
+  const role = payload.role;
+  if (role === 'authenticated' || role === 'anon') return role;
+  return null;
+}
+
+/**
+ * Authenticate before Redlisten / proxy. Cron is a separate secret; manual is verified JWT + space ACL.
+ */
+async function authorizeDailyReportRequest(
+  req: Request,
+  serviceRoleKey: string,
+  anonKey: string
+): Promise<RequestAuth | Response> {
+  const cronHeader = (req.headers.get('x-cron-secret') ?? '').trim();
+  const bearer = bearerFromAuthorization(req.headers.get('Authorization'));
+
+  if (CRON_SECRET) {
+    if (cronHeader && timingSafeEqualString(cronHeader, CRON_SECRET)) {
+      return { kind: 'cron' };
+    }
+    if (bearer && timingSafeEqualString(bearer, CRON_SECRET)) {
+      return { kind: 'cron' };
+    }
+  }
+
+  if (bearer && timingSafeEqualString(bearer, serviceRoleKey)) {
+    return { kind: 'cron' };
+  }
+
+  if (!bearer) {
+    return jsonError(
+      401,
+      'Unauthorized: send Authorization Bearer (manual) or x-cron-secret (cron) before report generation'
+    );
+  }
+
+  const role = await verifyManualJwtRole(bearer, anonKey);
+  if (role === 'authenticated') return { kind: 'manual', role: 'authenticated' };
+  if (role === 'anon') return { kind: 'manual', role: 'anon' };
+
+  return jsonError(401, 'Unauthorized: invalid or unrecognized credentials');
+}
 
 interface RedditPost {
   id: string;
@@ -117,7 +352,7 @@ async function fetchDirect(subreddit: string): Promise<RedditPost[]> {
   return parseRedditJson(await res.json());
 }
 
-function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
+function parseRssPosts(xml: string, defaultSubreddit: string): RedditPost[] {
   const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
   const posts: RedditPost[] = [];
 
@@ -150,6 +385,14 @@ function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
     const createdUtc = updated ? new Date(updated).getTime() / 1000 : 0;
     if (createdUtc < cutoff) continue;
 
+    const fromLink = link.match(/\/r\/([^/]+)\//)?.[1];
+    // Lowercase so raw_post_count matches configured subreddit names.
+    const subreddit = (
+      fromLink ||
+      defaultSubreddit.split('+')[0] ||
+      defaultSubreddit
+    ).toLowerCase();
+
     posts.push({
       id,
       title,
@@ -158,37 +401,106 @@ function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
       num_comments: 0,
       subreddit,
       created_utc: createdUtc,
-      permalink: link.replace('https://www.reddit.com', ''),
+      permalink: link
+        .replace(/^https?:\/\/(www\.)?reddit\.com/, '')
+        .replace(/^https?:\/\/api\.redlisten\.com/, ''),
     });
   }
 
   return posts;
 }
 
-async function fetchViaRss(subreddit: string): Promise<RedditPost[]> {
-  const url = `${REDDIT_BASE}/r/${subreddit}/hot.rss`;
-  console.log(`[reddit] Trying RSS for r/${subreddit}`);
-
+async function fetchViaRedlisten(subreddits: string[]): Promise<RedditPost[]> {
+  if (!REDLISTEN_API_KEY) {
+    throw new Error('REDLISTEN_API_KEY not set');
+  }
+  const joined = subreddits.map((s) => s.trim()).filter(Boolean).join('+');
+  const url = `${REDLISTEN_BASE}/r/${joined}/new.rss?key=${encodeURIComponent(REDLISTEN_API_KEY)}`;
+  console.log(`[reddit] Redlisten Free feed r/${joined}`);
   const res = await fetch(url, {
-    headers: { 'User-Agent': `${USER_AGENT} RSS`, Accept: 'application/atom+xml,application/xml' },
+    headers: {
+      'User-Agent': `${USER_AGENT} Redlisten`,
+      Accept: 'application/atom+xml,application/xml',
+      Authorization: `Bearer ${REDLISTEN_API_KEY}`,
+    },
   });
-  if (!res.ok) throw new Error(`RSS fetch r/${subreddit}: ${res.status}`);
-
-  const xml = await res.text();
-  const posts = parseRssPosts(xml, subreddit);
-  console.log(`[reddit] r/${subreddit}: RSS parsed ${posts.length} posts`);
+  // Classify 429 from status alone — body read may fail after quota responses.
+  const status = res.status;
+  const text = await res.text().catch(() => '');
+  if (status === 429) {
+    throw new RedlistenQuotaError(
+      `Redlisten Free quota exceeded (upstream rejects until next UTC month; no auto-charge to Pro). ${text.slice(0, 160)}`
+    );
+  }
+  if (!res.ok) {
+    throw new Error(`Redlisten r/${joined}: ${status} ${text.slice(0, 160)}`);
+  }
+  const posts = parseRssPosts(text, joined);
+  console.log(`[reddit] Redlisten parsed ${posts.length} posts for r/${joined}`);
   return posts;
 }
 
-async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<RedditPost[]> {
+async function fetchViaRedditPublicRss(subreddit: string): Promise<RedditPost[]> {
+  // Reddit shut down public RSS (Nov 2026). Ladder kept for completeness.
+  const urls = [
+    `${REDDIT_BASE}/r/${subreddit}/.rss`,
+    `${REDDIT_BASE}/r/${subreddit}/hot/.rss`,
+    `${REDDIT_BASE}/r/${subreddit}/hot.rss`,
+  ];
+
+  const errors: string[] = [];
+  for (const url of urls) {
+    console.log(`[reddit] Trying RSS for r/${subreddit}: ${url}`);
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': `${USER_AGENT} RSS`,
+          Accept: 'application/atom+xml,application/xml',
+        },
+      });
+      if (!res.ok) {
+        errors.push(`${url} → ${res.status}`);
+        continue;
+      }
+      const xml = await res.text();
+      const posts = parseRssPosts(xml, subreddit);
+      console.log(`[reddit] r/${subreddit}: RSS parsed ${posts.length} posts from ${url}`);
+      if (posts.length > 0) return posts;
+      errors.push(`${url} → empty feed`);
+    } catch (err) {
+      errors.push(`${url} → ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  throw new Error(
+    `RSS fetch r/${subreddit} failed. Set REDLISTEN_API_KEY (Free, no card) or restore a feed source. ${errors.join('; ')}`
+  );
+}
+
+async function fetchViaRss(subreddit: string, opts?: { skipRedlisten?: boolean }): Promise<RedditPost[]> {
+  // Prefer Redlisten Free when configured — unless recovering after a failed batch
+  // (skipRedlisten) so we do not burn more Free credits on the same failure mode.
+  if (REDLISTEN_API_KEY && !opts?.skipRedlisten) {
+    return fetchViaRedlisten([subreddit]);
+  }
+  return fetchViaRedditPublicRss(subreddit);
+}
+
+async function fetchSubreddit(
+  subreddit: string,
+  oauthToken?: string,
+  opts?: { skipRedlisten?: boolean }
+): Promise<RedditPost[]> {
   if (oauthToken) {
     console.log(`[reddit] r/${subreddit}: trying OAuth`);
     try {
       const posts = await fetchWithOAuth(subreddit, oauthToken);
       console.log(`[reddit] r/${subreddit}: OAuth OK, ${posts.length} posts`);
-      return posts;
+      if (posts.length > 0) return posts;
+      console.warn(`[reddit] r/${subreddit}: OAuth returned 0 posts; falling through to direct/RSS`);
     } catch (err) {
-      console.error(`[reddit] r/${subreddit}: OAuth failed:`, err);
+      // Catch listing/network/parse failures and continue to direct → RSS.
+      console.error(`[reddit] r/${subreddit}: OAuth listing failed, falling through:`, err);
     }
   }
 
@@ -196,13 +508,14 @@ async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<R
   try {
     const posts = await fetchDirect(subreddit);
     console.log(`[reddit] r/${subreddit}: direct OK, ${posts.length} posts`);
-    return posts;
+    if (posts.length > 0) return posts;
+    console.warn(`[reddit] r/${subreddit}: direct returned 0 posts; trying RSS`);
   } catch (err) {
     console.error(`[reddit] r/${subreddit}: direct failed:`, err);
   }
 
   console.log(`[reddit] r/${subreddit}: trying RSS fallback`);
-  const posts = await fetchViaRss(subreddit);
+  const posts = await fetchViaRss(subreddit, opts);
   console.log(`[reddit] r/${subreddit}: RSS OK, ${posts.length} posts`);
   return posts;
 }
@@ -210,6 +523,8 @@ async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<R
 interface FetchResult {
   posts: RedditPost[];
   errors: string[];
+  source?: string;
+  redlistenAttempted?: boolean;
 }
 
 // --- Embeddings ---
@@ -224,28 +539,84 @@ interface PostEmbeddingPayload {
   embedding: number[];
 }
 
-async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
-  // If proxy is configured, delegate fetching to it (e.g. Netlify Function) to avoid IP blocking.
-  if (REDDIT_PROXY_URL) {
-    const url = `${REDDIT_PROXY_URL}?subreddits=${encodeURIComponent(subreddits.join(','))}`;
-    console.log('[reddit] Using external proxy for subreddits:', subreddits.join(', '));
-    const res = await fetch(url, {
-      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Reddit proxy error ${res.status}: ${text.slice(0, 200)}`);
+async function fetchAllSubredditsDirect(
+  subreddits: string[],
+  oauthToken?: string,
+  opts?: { skipRedlisten?: boolean }
+): Promise<FetchResult> {
+  // Redlisten Free: batch into few Atom requests (1 credit each) instead of N.
+  // skipRedlisten: proxy already spent Free credits — recover via OAuth/direct only.
+  if (REDLISTEN_API_KEY && !opts?.skipRedlisten) {
+    const errors: string[] = [];
+    const posts: RedditPost[] = [];
+    const recoverSubs: string[] = [];
+    let redlistenQuotaExhausted = false;
+    for (let i = 0; i < subreddits.length; i += REDLISTEN_BATCH_SIZE) {
+      const batch = subreddits.slice(i, i + REDLISTEN_BATCH_SIZE);
+      if (redlistenQuotaExhausted) {
+        errors.push(
+          `redlisten r/${batch.join('+')}: skipped after upstream 429; recovering via OAuth/direct`
+        );
+        recoverSubs.push(...batch);
+        continue;
+      }
+      try {
+        const batchPosts = await fetchViaRedlisten(batch);
+        if (batchPosts.length === 0) {
+          errors.push(`redlisten r/${batch.join('+')}: empty feed; recovering via OAuth/direct`);
+          recoverSubs.push(...batch);
+        } else {
+          posts.push(...batchPosts);
+          // Busy sub can fill the 50-item page; recover requested subs missing from the page.
+          const present = new Set(
+            batchPosts.map((p) => p.subreddit.toLowerCase()).filter(Boolean)
+          );
+          const missing = batch.filter((s) => !present.has(s.toLowerCase()));
+          if (missing.length > 0) {
+            errors.push(
+              `redlisten r/${batch.join('+')}: page omitted ${missing.join('+')}; recovering via OAuth/direct (no Redlisten retry)`
+            );
+            recoverSubs.push(...missing);
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (err instanceof RedlistenQuotaError) {
+          redlistenQuotaExhausted = true;
+          errors.push(
+            `redlisten r/${batch.join('+')}: ${msg}; stopping further Redlisten batches this run`
+          );
+        } else {
+          errors.push(`redlisten r/${batch.join('+')}: ${msg}; recovering via OAuth/direct`);
+        }
+        console.error('[reddit] Redlisten batch failed:', err);
+        recoverSubs.push(...batch);
+      }
     }
-    const data = (await res.json()) as { posts: RedditPost[]; errors?: string[] };
-    const errors = data.errors ?? [];
-    if (errors.length > 0) {
-      for (const e of errors) console.error('[reddit-proxy]', e);
+
+    // Per-sub legacy recovery for failed/empty batches (skip Redlisten to avoid
+    // spending more Free credits on the same failure). Needs OAuth/direct to help.
+    if (recoverSubs.length > 0) {
+      const recovery = await Promise.allSettled(
+        recoverSubs.map((sub) => fetchSubreddit(sub, oauthToken, { skipRedlisten: true }))
+      );
+      for (let i = 0; i < recovery.length; i++) {
+        const r = recovery[i];
+        if (r.status === 'fulfilled') {
+          posts.push(...r.value);
+        } else {
+          const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+          errors.push(`r/${recoverSubs[i]} recovery: ${msg}`);
+          console.error(`[reddit] r/${recoverSubs[i]} recovery failed:`, r.reason);
+        }
+      }
     }
-    return { posts: data.posts ?? [], errors };
+
+    return { posts, errors, source: 'redlisten', redlistenAttempted: true };
   }
 
   const results = await Promise.allSettled(
-    subreddits.map((sub) => fetchSubreddit(sub, oauthToken))
+    subreddits.map((sub) => fetchSubreddit(sub, oauthToken, { skipRedlisten: opts?.skipRedlisten }))
   );
   const errors: string[] = [];
 
@@ -259,7 +630,105 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
   }
 
   const posts = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
-  return { posts, errors };
+  return {
+    posts,
+    errors,
+    source: opts?.skipRedlisten ? 'legacy-after-redlisten' : 'legacy',
+    redlistenAttempted: Boolean(opts?.skipRedlisten),
+  };
+}
+
+async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
+  // Prefer proxy when configured (Netlify hosts Redlisten key in production).
+  // Ambiguous proxy outcomes (transport/body loss, non-auth HTTP errors) must not
+  // re-run Redlisten on Edge — the proxy may already have spent Free credits.
+  let skipRedlistenOnFallback = false;
+
+  if (REDDIT_PROXY_URL) {
+    if (!REDDIT_PROXY_SECRET) {
+      console.warn(
+        '[reddit] REDDIT_PROXY_URL set but REDDIT_PROXY_SECRET missing; skipping proxy (auth required)'
+      );
+    } else {
+      const url = `${REDDIT_PROXY_URL}?subreddits=${encodeURIComponent(subreddits.join(','))}`;
+      console.log('[reddit] Using external proxy for subreddits:', subreddits.join(', '));
+      try {
+        const res = await fetch(url, {
+          headers: {
+            'User-Agent': USER_AGENT,
+            Accept: 'application/json',
+            Authorization: `Bearer ${REDDIT_PROXY_SECRET}`,
+          },
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          console.error(`[reddit] proxy HTTP ${res.status}: ${text.slice(0, 200)}`);
+          // Auth rejection happens before Redlisten; other statuses are ambiguous.
+          if (res.status !== 401 && res.status !== 403) {
+            skipRedlistenOnFallback = true;
+          }
+        } else {
+          let data: {
+            posts: RedditPost[];
+            errors?: string[];
+            source?: string;
+            redlistenAttempted?: boolean;
+          };
+          try {
+            data = (await res.json()) as typeof data;
+          } catch (parseErr) {
+            console.error('[reddit] proxy JSON undecodable; skipping Redlisten on fallback:', parseErr);
+            skipRedlistenOnFallback = true;
+            data = { posts: [] };
+          }
+          const errors = Array.isArray(data.errors) ? data.errors : [];
+          if (errors.length > 0) {
+            for (const e of errors) console.error('[reddit-proxy]', e);
+          }
+          const posts = Array.isArray(data.posts) ? data.posts : [];
+          if (posts.length > 0) {
+            return {
+              posts,
+              errors,
+              source: data.source,
+              redlistenAttempted: data.redlistenAttempted,
+            };
+          }
+          // Empty body: allow Redlisten fallback only for explicit no-attempt signals.
+          // Unknown `source` values are ambiguous — do not re-spend Free credits.
+          const recognizedNoAttemptSources = new Set(['legacy', 'oauth', 'rss', 'oauth+rss']);
+          const allowRedlistenFallback =
+            data.redlistenAttempted === false ||
+            (typeof data.source === 'string' && recognizedNoAttemptSources.has(data.source));
+          const redlistenAlready =
+            skipRedlistenOnFallback ||
+            !allowRedlistenFallback ||
+            data.redlistenAttempted === true ||
+            (typeof data.source === 'string' && data.source.startsWith('redlisten'));
+          if (redlistenAlready) {
+            console.warn(
+              '[reddit] proxy returned 0 posts after Redlisten/ambiguous body; recovering via OAuth/direct only (no Redlisten retry)'
+            );
+            return fetchAllSubredditsDirect(subreddits, oauthToken, { skipRedlisten: true });
+          }
+          console.warn('[reddit] proxy returned 0 posts with explicit no-Redlisten meta; falling back including Redlisten');
+        }
+      } catch (err) {
+        console.error('[reddit] proxy failed (ambiguous); skipping Redlisten on fallback:', err);
+        skipRedlistenOnFallback = true;
+      }
+    }
+  }
+
+  const direct = await fetchAllSubredditsDirect(subreddits, oauthToken, {
+    skipRedlisten: skipRedlistenOnFallback,
+  });
+  if (direct.posts.length === 0 && !oauthToken && !REDLISTEN_API_KEY) {
+    direct.errors.push(
+      'No Reddit posts fetched. Set REDLISTEN_API_KEY (Free at https://app.redlisten.com — no card, no auto Pro) on Edge + Netlify.'
+    );
+  }
+  return direct;
 }
 
 async function upsertPostEmbeddings(
@@ -645,7 +1114,9 @@ async function processSpace(
   const now = new Date().toISOString();
   const rawPostCount: Record<string, number> = {};
   for (const sub of subreddits) {
-    rawPostCount[sub] = posts.filter((p) => p.subreddit === sub).length;
+    const key = sub.toLowerCase();
+    // Keep configured key casing; match posts case-insensitively (RSS/OAuth may differ).
+    rawPostCount[sub] = posts.filter((p) => p.subreddit.toLowerCase() === key).length;
   }
 
   const report = {
@@ -714,11 +1185,6 @@ async function processSpace(
 
 // --- Handler ---
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -732,68 +1198,73 @@ Deno.serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
     if (!openaiKey) {
-      return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not set' }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonError(500, 'OPENAI_API_KEY not set');
     }
 
     if (!supabaseUrl || !supabaseKey) {
-      return new Response(JSON.stringify({ error: 'Supabase credentials not set' }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonError(500, 'Supabase credentials not set');
     }
 
-    const redditClientId = Deno.env.get('REDDIT_CLIENT_ID');
-    const redditClientSecret = Deno.env.get('REDDIT_CLIENT_SECRET');
-
-    let oauthToken: string | undefined;
-    if (redditClientId && redditClientSecret) {
-      try {
-        oauthToken = await getRedditOAuthToken(redditClientId, redditClientSecret);
-      } catch (err) {
-        console.error('[reddit] OAuth failed, falling back to unauthenticated:', err);
-      }
-    }
+    // Gate Redlisten / proxy spend: auth before body side-effects and feed fetches.
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+    const auth = await authorizeDailyReportRequest(req, supabaseKey, anonKey);
+    if (auth instanceof Response) return auth;
 
     // Parse request body
     let requestSpaceId: string | undefined;
-    let bodySubreddits: string[] | undefined;
     let bodyRecipients: string[] | undefined;
 
     if (req.method === 'POST') {
       try {
         const body = await req.json();
         requestSpaceId = body.space_id;
-        if (body.subreddits?.length > 0) bodySubreddits = body.subreddits;
         if (Array.isArray(body.emailRecipients) && body.emailRecipients.length > 0)
           bodyRecipients = body.emailRecipients;
       } catch {
-        // empty body — process all spaces
+        // empty body — process all spaces (cron only)
       }
     }
 
-    // Build list of spaces to process
+    if (auth.kind === 'manual' && !requestSpaceId) {
+      return jsonError(
+        403,
+        'Forbidden: manual callers must pass space_id; all-spaces runs require cron credentials'
+      );
+    }
+
+    // Optional Reddit OAuth — only after auth (legacy recovery; not required without a Reddit account).
+    const redditClientId = Deno.env.get('REDDIT_CLIENT_ID');
+    const redditClientSecret = Deno.env.get('REDDIT_CLIENT_SECRET');
+    let oauthToken: string | undefined;
+    if (redditClientId && redditClientSecret) {
+      try {
+        oauthToken = await getRedditOAuthToken(redditClientId, redditClientSecret);
+      } catch (err) {
+        console.error('[reddit] OAuth failed, falling back to Redlisten/RSS:', err);
+      }
+    }
+
+    // Build list of spaces to process (subreddits always from DB — not caller-supplied).
     const spacesToProcess: SpaceConfig[] = [];
 
     if (requestSpaceId) {
-      // Manual call with specific space_id
       const spaceRes = await fetch(
-        `${supabaseUrl}/rest/v1/spaces?id=eq.${requestSpaceId}&select=id,name,domain_prompt,subreddits,email_recipients`,
+        `${supabaseUrl}/rest/v1/spaces?id=eq.${encodeURIComponent(requestSpaceId)}&is_active=eq.true&select=id,name,domain_prompt,subreddits,email_recipients`,
         { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
       );
       if (spaceRes.ok) {
         const rows = await spaceRes.json();
         if (rows.length > 0) {
           const space = rows[0] as SpaceConfig;
-          if (bodySubreddits) space.subreddits = bodySubreddits;
           if (bodyRecipients) space.email_recipients = bodyRecipients;
           spacesToProcess.push(space);
         }
       }
+      if (spacesToProcess.length === 0) {
+        return jsonError(403, 'Forbidden: space not found, inactive, or not accessible');
+      }
     } else {
-      // Cron or no space_id — process all active spaces
+      // Cron all-spaces path
       const spacesRes = await fetch(
         `${supabaseUrl}/rest/v1/spaces?is_active=eq.true&select=id,name,domain_prompt,subreddits,email_recipients&order=created_at.asc`,
         { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
@@ -805,10 +1276,7 @@ Deno.serve(async (req) => {
     }
 
     if (spacesToProcess.length === 0) {
-      return new Response(JSON.stringify({ error: 'No spaces found to process' }), {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonError(404, 'No spaces found to process');
     }
 
     console.log(

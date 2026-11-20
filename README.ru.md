@@ -8,7 +8,7 @@
 
 Каждый день в 09:00 UTC Supabase pg_cron запускает Edge Function, которая:
 
-1. **Собирает** горячие посты из настроенных сабреддитов (r/lonely, r/depression, r/socialskills) через 3-уровневую стратегию: Reddit OAuth → JSON API → RSS-фид (fallback)
+1. **Собирает** свежие посты из настроенных сабреддитов через Redlisten Free RSS (батчами через аутентифицированный Netlify `reddit-proxy`). Legacy Reddit OAuth/direct — если нет `REDLISTEN_API_KEY`, или как per-sub recovery после пустого/упавшего Redlisten-батча
 2. **Анализирует** посты через OpenAI gpt-4o-mini со структурированным промптом, настроенным на извлечение actionable-сигналов
 3. **Структурирует** результат в 4 категории сигналов: новые темы, растущие тренды, боли, продуктовые гипотезы
 4. **Сохраняет** отчёт в Supabase PostgreSQL
@@ -58,6 +58,8 @@ npm run lint:fix   # Автоисправление Biome
 Фронтенд деплоится автоматически на Netlify при пуше в `main`. Edge Function деплоится через:
 
 ```bash
+# --no-verify-jwt: gateway не проверяет JWT (нужно для pg_cron + x-cron-secret).
+# Сама функция всё равно проверяет manual JWT (JWKS / JWT_SECRET / exact anon key) до Redlisten.
 npx supabase functions deploy daily-report --no-verify-jwt
 ```
 
@@ -83,7 +85,21 @@ SUBREDDITS=lonely,depression,socialskills  # Сабреддиты по умол�
 SUPABASE_URL=https://xxxxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
 
-# Reddit OAuth (опционально — даёт полный доступ к API)
+# Redlisten Free (после отключения публичного RSS Reddit, Nov 2026)
+# Бесплатный ключ: https://app.redlisten.com — без карты.
+# Сверх квоты Redlisten отвечает 429 до следующего UTC-месяца (Pro только вручную).
+# Останавливаем дальнейшие Redlisten-батчи только для текущего space; app-паузы нет.
+REDLISTEN_API_KEY=
+# Общий секрет Edge ↔ Netlify reddit-proxy (нужен при использовании proxy)
+REDDIT_PROXY_SECRET=
+# Supabase Edge secret: абсолютный URL задеплоенной Netlify-функции, напр.
+# https://<site>.netlify.app/.netlify/functions/reddit-proxy
+REDDIT_PROXY_URL=
+# Edge secret для pg_cron all-spaces (заголовок x-cron-secret). UI: anon JWT + space_id.
+CRON_SECRET=
+
+# Reddit OAuth — опционально; без Reddit-аккаунта не нужен (достаточно Redlisten).
+# Для OAuth-recovery на Netlify задай ту же пару и там.
 REDDIT_CLIENT_ID=
 REDDIT_CLIENT_SECRET=
 ```
@@ -123,24 +139,36 @@ create policy "Allow all" on public.app_settings for all using (true) with check
 
 ### Настройка pg_cron (Supabase SQL Editor)
 
+All-spaces cron обязан слать `x-cron-secret` (Vault) и gateway `Authorization` Bearer (legacy anon JWT). Предпочтительно применить миграцию `014`; форма расписания:
+
 ```sql
 create extension if not exists pg_cron schema pg_catalog;
 create extension if not exists pg_net;
 
+-- Один раз (SQL editor): значение = Edge CRON_SECRET — не коммитить.
+-- select vault.create_secret('<CRON_SECRET>', 'daily_report_cron_secret', 'pg_cron → daily-report');
+
 select cron.schedule(
   'daily-trendwatcher-report',
   '0 9 * * *',  -- каждый день в 09:00 UTC
-  $$
+  $cmd$
   select net.http_post(
     url := 'https://<project-ref>.supabase.co/functions/v1/daily-report'::text,
-    headers := '{"Content-Type": "application/json"}'::jsonb,
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer <anon-jwt>',
+      'x-cron-secret', coalesce(
+        (select decrypted_secret from vault.decrypted_secrets where name = 'daily_report_cron_secret' limit 1),
+        ''
+      )
+    ),
     body := '{}'::jsonb
   );
-  $$
+  $cmd$
 );
 ```
 
-Когда pg_cron запускается с пустым телом запроса, Edge Function читает сабреддиты и получателей email из таблицы `app_settings` — поэтому изменения, сделанные в UI, автоматически отражаются в ежедневных отчётах.
+Когда pg_cron запускается с пустым телом и валидным cron-секретом, Edge Function обрабатывает все активные space (сабы из БД). Ручные вызовы из UI — anon/user JWT + `space_id`.
 
 ## Архитектура
 
@@ -202,13 +230,15 @@ src/
 
 ### Доступ к данным Reddit
 
-Reddit блокирует API-запросы с IP-адресов облачных провайдеров. Edge Function использует 3-уровневый fallback:
+Публичный RSS Reddit отключён (Nov 2026), JSON без логина с cloud IP — 403. TrendWatcher использует:
 
-1. **Reddit OAuth** (при наличии учётных данных) — официальный API с полным доступом к постам/комментариям
-2. **JSON API напрямую** — работает локально, блокируется с большинства облачных IP
-3. **RSS-фид** — `reddit.com/r/{sub}/hot.rss` — работает с любых IP, ограниченные метаданные, но достаточно для анализа на этапе MVP
+1. **Redlisten Free** (если задан `REDLISTEN_API_KEY`) — `api.redlisten.com/.../new.rss`. Без Reddit-аккаунта. Free: 1 000 запросов/мес; сверх квоты **Redlisten отвечает 429 до следующего UTC-месяца**, **без авто-апгрейда на Pro**. На 429 останавливаем дальнейшие Redlisten-батчи **для этого space** (дальше legacy); следующие space в том же cron-запуске могут снова дергать Redlisten. Месячный отказ — со стороны Redlisten, не app-пауза.
+2. **Netlify `reddit-proxy`** — батчит сабы; failed/empty батчи восстанавливает внутри proxy (OAuth **если настроен**, иначе RSS). Нужен `REDDIT_PROXY_SECRET`. Задай Edge `REDDIT_PROXY_URL` на задеплоенную функцию. Неоднозначный/пустой ответ после Redlisten → Edge `skipRedlisten`.
+3. **Reddit OAuth / direct JSON** — **опционально**. Только если есть Reddit-приложение и `REDDIT_CLIENT_ID`/`SECRET` на **Edge и Netlify**. Без Reddit-аккаунта — Redlisten (+ RSS, сейчас мёртв).
 
-Когда будут получены Reddit OAuth-данные (требуется одобренное Reddit-приложение), система автоматически переключится на полный API с более богатыми данными.
+**Auth до траты квоты:** UI шлёт Bearer, который handler проверяет (exact `SUPABASE_ANON_KEY`, JWKS ES256 или Edge `JWT_SECRET` HS256) + `space_id`. pg_cron all-spaces — `x-cron-secret` из Vault (`daily_report_cron_secret`) = Edge `CRON_SECRET` (миграция `014`). Поддельные payload-only JWT отклоняются даже с `--no-verify-jwt`.
+
+Бесплатный ключ: https://app.redlisten.com — **Netlify**: `REDLISTEN_API_KEY`, `REDDIT_PROXY_SECRET` (+ опциональный OAuth); **Edge**: то же + `REDDIT_PROXY_URL` + `CRON_SECRET`.
 
 ### AI-анализ: почему LLM, а не эмбеддинги
 
@@ -305,7 +335,7 @@ Email-отчёты дополнительно содержат ссылки на
 
 **Supabase как единый бэкенд.** Edge Functions, PostgreSQL, pg_cron — одна платформа вместо разброса по провайдерам. Netlify отдаёт только статику. Нет vendor lock-in на вычислительном уровне (Edge Functions — стандартный Deno, легко переносимый на Hono/Cloudflare).
 
-**RSS-fallback для Reddit.** Reddit блокирует облачные IP при обращении к JSON API. Вместо блокировки используем RSS-фиды, которые работают с любых IP. Компромисс: меньше метаданных на пост, но достаточно для LLM-анализа. Путь обновления через OAuth готов в коде.
+**Redlisten Free для Reddit.** После отключения публичного RSS берём Atom-зеркало Redlisten (Free, без карты). Запросы батчим, чтобы уложиться в 1k/мес; исчерпание квоты — пауза, не автосписание.
 
 **LLM вместо эмбеддингов для MVP.** gpt-4o-mini по $0.15/1M входных токенов стоит ~$0.01 за отчёт. Даёт нюансированный анализ с actionable-гипотезами. Эмбеддинги + кластеризация отложены до момента, когда объём исторических данных оправдает инфраструктуру.
 

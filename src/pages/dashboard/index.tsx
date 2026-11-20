@@ -12,7 +12,7 @@ import { SignalList } from '@widgets/signal-list';
 import { TrendBoard } from '@widgets/trend-board';
 import { BarChart3, CalendarDays, CalendarRange, Layers, Settings } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 
 type ViewFilter = 'all' | 'daily' | 'weekly' | 'monthly';
@@ -33,6 +33,8 @@ export function SpaceDashboardPage() {
   const clearError = useAppStore((s) => s.clearError);
 
   const space = spaces.find((s) => s.slug === slug);
+  const spaceIdRef = useRef<string | null>(space?.id ?? null);
+  spaceIdRef.current = space?.id ?? null;
 
   const [filter, setFilter] = useState<ViewFilter>('all');
   const [weeklyReports, setWeeklyReports] = useState<AggregateReport[]>([]);
@@ -42,6 +44,12 @@ export function SpaceDashboardPage() {
   const [weeklyGenerating, setWeeklyGenerating] = useState(false);
   const [monthlyGenerating, setMonthlyGenerating] = useState(false);
   const [creativeStatus, setCreativeStatus] = useState<string | null>(null);
+  /** Invalidate in-flight aggregate runs on navigation / newer same-space starts (A→B→A). */
+  const weeklyRunIdRef = useRef(0);
+  const monthlyRunIdRef = useRef(0);
+  /** Navigation + load sequence so stale loadAllAggReports cannot overwrite newer lists. */
+  const aggNavEpochRef = useRef(0);
+  const aggLoadSeqRef = useRef(0);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: sync store with URL slug and load reports
   useEffect(() => {
@@ -53,70 +61,97 @@ export function SpaceDashboardPage() {
     }
   }, [space?.id]);
 
-  const loadAllAggReports = useCallback(async () => {
-    if (!space) return;
+  const loadAllAggReports = useCallback(async (forSpaceId: string) => {
+    const epochAtStart = aggNavEpochRef.current;
+    const seqAtStart = ++aggLoadSeqRef.current;
+    const isCurrentLoad = () =>
+      aggNavEpochRef.current === epochAtStart &&
+      aggLoadSeqRef.current === seqAtStart &&
+      spaceIdRef.current === forSpaceId;
     setAggLoading(true);
     setAggError(null);
     try {
       const [weekly, monthly] = await Promise.all([
-        loadAggregateReports(space.id, 'week'),
-        loadAggregateReports(space.id, 'month'),
+        loadAggregateReports(forSpaceId, 'week'),
+        loadAggregateReports(forSpaceId, 'month'),
       ]);
+      if (!isCurrentLoad()) return;
       setWeeklyReports(weekly);
       setMonthlyReports(monthly);
     } catch (err) {
+      if (!isCurrentLoad()) return;
       setAggError(err instanceof Error ? err.message : 'Failed to load aggregate reports');
     } finally {
-      setAggLoading(false);
+      if (isCurrentLoad()) {
+        setAggLoading(false);
+      }
     }
-  }, [space]);
+  }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load aggregate reports when space is ready
-  useEffect(() => {
-    if (space && activeSpaceId === space.id) {
-      loadAllAggReports();
-    }
-  }, [space?.id, activeSpaceId]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on space change
+  // Reset then load in one effect so epoch bump cannot invalidate a load that already captured it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: space sync + aggregate refresh
   useEffect(() => {
     setWeeklyReports([]);
     setMonthlyReports([]);
     setAggError(null);
-  }, [activeSpaceId]);
+    aggNavEpochRef.current += 1;
+    weeklyRunIdRef.current += 1;
+    monthlyRunIdRef.current += 1;
+    setWeeklyGenerating(false);
+    setMonthlyGenerating(false);
+    setCreativeStatus(null);
+
+    if (space && activeSpaceId === space.id) {
+      void loadAllAggReports(space.id);
+    }
+  }, [space?.id, activeSpaceId, loadAllAggReports]);
 
   const handleGenerateAggregate = async (periodType: PeriodType) => {
     if (!space) return;
-    const setGenerating = periodType === 'week' ? setWeeklyGenerating : setMonthlyGenerating;
+    const spaceId = space.id;
+    const isWeek = periodType === 'week';
+    const setGenerating = isWeek ? setWeeklyGenerating : setMonthlyGenerating;
+    const runIdRef = isWeek ? weeklyRunIdRef : monthlyRunIdRef;
+    const runId = ++runIdRef.current;
+    const isCurrentRun = () =>
+      runIdRef.current === runId && spaceIdRef.current === spaceId;
     setGenerating(true);
     setAggError(null);
     setCreativeStatus(null);
     try {
-      const result = await generateAggregateReport(space.id, periodType);
+      const result = await generateAggregateReport(spaceId, periodType);
+      if (!isCurrentRun()) return;
       if (!result.success) {
         setAggError(result.error ?? 'Generation failed');
         return;
       }
-      await loadAllAggReports();
+      await loadAllAggReports(spaceId);
+      if (!isCurrentRun()) return;
 
       if (result.creativeParams && result.creativeParams.concepts.length > 0) {
         const total = result.creativeParams.concepts.length;
         const target = total * 10;
         setCreativeStatus(`Creating images: 0/${target}…`);
         await fillCreativesFromClient(result.creativeParams, (doneConcepts, _totalC, totalImgs) => {
+          if (!isCurrentRun()) return;
           setCreativeStatus(
             doneConcepts >= total
               ? null
-              : `Creating images: ${totalImgs}/${target} (${doneConcepts}/${total} concepts done)…`,
+              : `Creating images: ${totalImgs}/${target} (${doneConcepts}/${total} concepts done)…`
           );
         });
+        if (!isCurrentRun()) return;
         setCreativeStatus(null);
       }
     } catch (err) {
+      if (!isCurrentRun()) return;
       setAggError(err instanceof Error ? err.message : 'Failed to generate report');
     } finally {
-      setGenerating(false);
-      setCreativeStatus(null);
+      // Only the latest run for this space/period may clear the generating flag.
+      if (isCurrentRun()) {
+        setGenerating(false);
+        setCreativeStatus(null);
+      }
     }
   };
 
