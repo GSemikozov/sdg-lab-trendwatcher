@@ -8,7 +8,7 @@ Internal signal intelligence tool that analyzes Reddit discussions daily, identi
 
 Every day at 09:00 UTC, a Supabase pg_cron job triggers an Edge Function that:
 
-1. **Fetches** hot posts from configured subreddits (r/lonely, r/depression, r/socialskills) via a 3-tier strategy: Reddit OAuth → direct JSON API → RSS feed fallback
+1. **Fetches** recent posts from configured subreddits via Redlisten Free RSS (batched through Netlify `reddit-proxy`), with optional OAuth/direct fallbacks
 2. **Analyzes** posts through OpenAI gpt-4o-mini with a structured prompt tuned for actionable signal extraction
 3. **Structures** output into 4 signal categories: emerging topics, growing trends, pain points, product hypotheses
 4. **Saves** the report to Supabase PostgreSQL
@@ -83,7 +83,11 @@ SUBREDDITS=lonely,depression,socialskills  # Default subreddits
 SUPABASE_URL=https://xxxxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
 
-# Reddit OAuth (optional — enables full API access)
+# Redlisten Free (preferred feed source after Reddit RSS shutdown Nov 2026)
+# Free key at https://app.redlisten.com — no credit card. Over quota → pause until next UTC month (no auto Pro).
+REDLISTEN_API_KEY=
+
+# Reddit OAuth (optional legacy — not required)
 REDDIT_CLIENT_ID=
 REDDIT_CLIENT_SECRET=
 
@@ -206,13 +210,13 @@ src/
 
 ### Reddit Data Access
 
-Reddit blocks API requests from cloud provider IPs. The Edge Function uses a 3-tier fallback:
+Reddit shut down public RSS (Nov 2026) and blocks unauthenticated JSON from cloud IPs. TrendWatcher uses:
 
-1. **Reddit OAuth** (when credentials available) — official API with full access to posts/comments
-2. **Direct JSON API** — works locally, blocked from most cloud IPs
-3. **RSS feed** — `reddit.com/r/{sub}/hot.rss` — reliable from cloud IPs, limited metadata but sufficient for MVP analysis
+1. **Redlisten Free** (preferred) — `api.redlisten.com/.../new.rss` with `REDLISTEN_API_KEY`. No Reddit account. Free: 1,000 requests/month; over quota pauses until the next UTC month — **no auto-upgrade / no auto-charge to Pro**.
+2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls to stay under Free quota.
+3. **Reddit OAuth / direct JSON** — optional legacy paths if credentials exist.
 
-When Reddit OAuth credentials are obtained (requires approved Reddit app), the system automatically upgrades to full API access with richer data.
+Sign up Free (no card): https://app.redlisten.com — set the same key on Netlify and Supabase Edge secrets.
 
 ### AI Analysis: Why LLM, Not Embeddings
 
@@ -309,7 +313,7 @@ Email reports additionally include links to the top 15 most discussed posts for 
 
 **Supabase as unified backend.** Edge Functions, PostgreSQL, pg_cron — one platform instead of splitting across providers. Netlify serves only static files. No vendor lock-in on the compute layer (Edge Functions are standard Deno, easily portable to Hono/Cloudflare).
 
-**RSS fallback for Reddit.** Reddit blocks cloud IPs from their JSON API. Rather than being blocked, we fall back to RSS feeds which are reliable from all IPs. Trade-off: less metadata per post, but sufficient for LLM analysis. OAuth upgrade path is ready in code.
+**Redlisten Free for Reddit.** After Reddit killed public RSS, we use Redlisten's Atom mirror (Free plan, no card). Requests are batched to stay under 1k/month; quota pause is not an auto-charge.
 
 **LLM over embeddings for MVP.** gpt-4o-mini at $0.15/1M input tokens costs ~$0.01 per daily report. Delivers nuanced analysis with actionable hypotheses. Embeddings + clustering deferred until longitudinal data justifies the infrastructure.
 

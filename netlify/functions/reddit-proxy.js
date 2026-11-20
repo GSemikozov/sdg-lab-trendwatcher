@@ -1,16 +1,26 @@
 // Netlify Function: reddit-proxy
-// Fetches Reddit listings from Netlify IPs and returns normalized posts.
-// Prefers OAuth (REDDIT_CLIENT_ID/SECRET) because public RSS shut down Nov 2026
-// and unauthenticated .json is blocked.
+// Fetches Reddit listings and returns normalized posts.
+//
+// Primary path (no Reddit account): Redlisten Free RSS mirror
+//   REDLISTEN_API_KEY → api.redlisten.com (Atom, same layout as old reddit.com RSS)
+// Free plan: 1,000 req/month, 50 items/page. Quota exhaustion → 429 pause until next
+// UTC month. No auto-upgrade / no auto-charge to Pro (upgrade is manual only).
+//
+// Optional: Reddit OAuth (REDDIT_CLIENT_ID/SECRET) if ever available.
+// Last resort: www.reddit.com RSS (dead since Nov 2026, kept for ladder completeness).
 
 const PERIOD_HOURS = 48;
 const MAX_POSTS = 100;
 const USER_AGENT = 'web:TrendWatcherNetlifyProxy:v1.0 (by /u/sdglab)';
+const REDLISTEN_BASE = 'https://api.redlisten.com';
+// Free plan page size is 50; keep multi-sub batches modest for URL length + mix.
+const REDLISTEN_BATCH_SIZE = 8;
 
 /**
- * Parse Reddit RSS/Atom XML into normalized posts.
+ * Parse Reddit/Redlisten RSS/Atom XML into normalized posts.
+ * When defaultSubreddit is a multi (`a+b`), subreddit is taken from the entry link.
  */
-function parseRssPosts(xml, subreddit) {
+function parseRssPosts(xml, defaultSubreddit) {
   const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
   const posts = [];
 
@@ -25,7 +35,7 @@ function parseRssPosts(xml, subreddit) {
       .replace(/&quot;/g, '"');
 
     const idMatch = entry.match(/<id>.*?\/comments\/([\w]+)/);
-    const id = idMatch ? idMatch[1] : `${subreddit}-${Math.random().toString(36).slice(2)}`;
+    const id = idMatch ? idMatch[1] : `${defaultSubreddit}-${Math.random().toString(36).slice(2)}`;
 
     const linkMatch = entry.match(/<link href="([^"]+)"/);
     const link = linkMatch ? linkMatch[1] : '';
@@ -50,6 +60,9 @@ function parseRssPosts(xml, subreddit) {
     const createdUtc = updated ? new Date(updated).getTime() / 1000 : 0;
     if (createdUtc < cutoff) continue;
 
+    const fromLink = link.match(/\/r\/([^/]+)\//)?.[1];
+    const subreddit = fromLink || defaultSubreddit.split('+')[0] || defaultSubreddit;
+
     posts.push({
       id,
       title,
@@ -58,7 +71,7 @@ function parseRssPosts(xml, subreddit) {
       num_comments: 0,
       subreddit,
       created_utc: createdUtc,
-      permalink: link.replace('https://www.reddit.com', ''),
+      permalink: link.replace(/^https?:\/\/(www\.)?reddit\.com/, '').replace(/^https?:\/\/api\.redlisten\.com/, ''),
     });
   }
 
@@ -115,7 +128,34 @@ async function fetchViaOAuth(subreddit, token) {
   return parseListingJson(await res.json(), subreddit);
 }
 
-async function fetchViaRss(subreddit) {
+/**
+ * Redlisten Free Atom feed. One HTTP call = one monthly request credit.
+ * Prefer batched multi-sub paths (`a+b+c`) to stay under Free 1k/month.
+ */
+async function fetchViaRedlisten(subreddits, apiKey) {
+  const joined = subreddits.map((s) => s.trim()).filter(Boolean).join('+');
+  // Redlisten docs: use new.rss (hot/top served newest-first; new is the stable path).
+  const url = `${REDLISTEN_BASE}/r/${joined}/new.rss?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': USER_AGENT,
+      Accept: 'application/atom+xml,application/xml',
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
+  const text = await res.text().catch(() => '');
+  if (res.status === 429) {
+    throw new Error(
+      `Redlisten Free quota exceeded (paused until next UTC month; no auto-charge). ${text.slice(0, 160)}`
+    );
+  }
+  if (!res.ok) {
+    throw new Error(`Redlisten ${res.status} ${text.slice(0, 160)}`);
+  }
+  return parseRssPosts(text, joined);
+}
+
+async function fetchViaRedditRss(subreddit) {
   const REDDIT_BASE = 'https://www.reddit.com';
   const urls = [
     `${REDDIT_BASE}/r/${subreddit}/.rss`,
@@ -140,11 +180,16 @@ async function fetchViaRss(subreddit) {
       if (posts.length > 0) return { posts, errors };
       errors.push(`${url} → empty`);
     } catch (err) {
-      // Keep walking the ladder so later endpoints still run.
       errors.push(`${url} → ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   return { posts: [], errors };
+}
+
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
 export const handler = async (event) => {
@@ -165,20 +210,43 @@ export const handler = async (event) => {
 
     const errors = [];
     const allPosts = [];
+    const redlistenKey = process.env.REDLISTEN_API_KEY;
     const clientId = process.env.REDDIT_CLIENT_ID;
     const clientSecret = process.env.REDDIT_CLIENT_SECRET;
-    let oauthToken = null;
 
+    // 1) Redlisten Free (preferred — no Reddit account)
+    if (redlistenKey) {
+      for (const batch of chunk(subreddits, REDLISTEN_BATCH_SIZE)) {
+        try {
+          const posts = await fetchViaRedlisten(batch, redlistenKey);
+          allPosts.push(...posts);
+          if (posts.length === 0) {
+            errors.push(`redlisten r/${batch.join('+')}: empty feed`);
+          }
+        } catch (err) {
+          errors.push(`redlisten r/${batch.join('+')}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ posts: allPosts, errors, source: 'redlisten' }),
+      };
+    }
+
+    errors.push(
+      'REDLISTEN_API_KEY not set (Free key from https://app.redlisten.com — no card, no auto Pro)'
+    );
+
+    // 2) Optional Reddit OAuth
+    let oauthToken = null;
     if (clientId && clientSecret) {
       try {
         oauthToken = await getOAuthToken(clientId, clientSecret);
       } catch (err) {
         errors.push(`oauth: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } else {
-      errors.push(
-        'oauth: REDDIT_CLIENT_ID/SECRET not set on Netlify (required after Reddit RSS shutdown Nov 2026)'
-      );
     }
 
     for (const subreddit of subreddits) {
@@ -195,10 +263,9 @@ export const handler = async (event) => {
             errors.push(
               `r/${subreddit}: oauth listing failed (${err instanceof Error ? err.message : String(err)}); trying RSS`
             );
-            // Fall through to RSS instead of skipping the subreddit entirely.
           }
         }
-        const { posts, errors: rssErrors } = await fetchViaRss(subreddit);
+        const { posts, errors: rssErrors } = await fetchViaRedditRss(subreddit);
         allPosts.push(...posts);
         errors.push(...rssErrors.map((e) => `r/${subreddit}: ${e}`));
       } catch (err) {
@@ -209,7 +276,7 @@ export const handler = async (event) => {
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ posts: allPosts, errors }),
+      body: JSON.stringify({ posts: allPosts, errors, source: oauthToken ? 'oauth+rss' : 'rss' }),
     };
   } catch (err) {
     return {

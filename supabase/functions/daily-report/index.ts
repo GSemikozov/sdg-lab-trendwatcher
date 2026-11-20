@@ -10,12 +10,16 @@
 
 const REDDIT_BASE = 'https://www.reddit.com';
 const REDDIT_OAUTH_BASE = 'https://oauth.reddit.com';
+const REDLISTEN_BASE = 'https://api.redlisten.com';
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const BREVO_BASE = 'https://api.brevo.com/v3';
 const MAX_POSTS = 100;
 const PERIOD_HOURS = 48;
 const USER_AGENT = 'web:TrendWatcher:v1.0 (by /u/sdglab)';
 const REDDIT_PROXY_URL = Deno.env.get('REDDIT_PROXY_URL');
+const REDLISTEN_API_KEY = Deno.env.get('REDLISTEN_API_KEY');
+/** Free plan: 1k req/mo — batch subs into one Atom call when possible. */
+const REDLISTEN_BATCH_SIZE = 8;
 
 interface RedditPost {
   id: string;
@@ -117,7 +121,7 @@ async function fetchDirect(subreddit: string): Promise<RedditPost[]> {
   return parseRedditJson(await res.json());
 }
 
-function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
+function parseRssPosts(xml: string, defaultSubreddit: string): RedditPost[] {
   const cutoff = Date.now() / 1000 - PERIOD_HOURS * 3600;
   const posts: RedditPost[] = [];
 
@@ -150,6 +154,9 @@ function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
     const createdUtc = updated ? new Date(updated).getTime() / 1000 : 0;
     if (createdUtc < cutoff) continue;
 
+    const fromLink = link.match(/\/r\/([^/]+)\//)?.[1];
+    const subreddit = fromLink || defaultSubreddit.split('+')[0] || defaultSubreddit;
+
     posts.push({
       id,
       title,
@@ -158,16 +165,50 @@ function parseRssPosts(xml: string, subreddit: string): RedditPost[] {
       num_comments: 0,
       subreddit,
       created_utc: createdUtc,
-      permalink: link.replace('https://www.reddit.com', ''),
+      permalink: link
+        .replace(/^https?:\/\/(www\.)?reddit\.com/, '')
+        .replace(/^https?:\/\/api\.redlisten\.com/, ''),
     });
   }
 
   return posts;
 }
 
+async function fetchViaRedlisten(subreddits: string[]): Promise<RedditPost[]> {
+  if (!REDLISTEN_API_KEY) {
+    throw new Error('REDLISTEN_API_KEY not set');
+  }
+  const joined = subreddits.map((s) => s.trim()).filter(Boolean).join('+');
+  const url = `${REDLISTEN_BASE}/r/${joined}/new.rss?key=${encodeURIComponent(REDLISTEN_API_KEY)}`;
+  console.log(`[reddit] Redlisten Free feed r/${joined}`);
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': `${USER_AGENT} Redlisten`,
+      Accept: 'application/atom+xml,application/xml',
+      Authorization: `Bearer ${REDLISTEN_API_KEY}`,
+    },
+  });
+  const text = await res.text();
+  if (res.status === 429) {
+    throw new Error(
+      `Redlisten Free quota exceeded (pauses until next UTC month; no auto-charge to Pro). ${text.slice(0, 160)}`
+    );
+  }
+  if (!res.ok) {
+    throw new Error(`Redlisten r/${joined}: ${res.status} ${text.slice(0, 160)}`);
+  }
+  const posts = parseRssPosts(text, joined);
+  console.log(`[reddit] Redlisten parsed ${posts.length} posts for r/${joined}`);
+  return posts;
+}
+
 async function fetchViaRss(subreddit: string): Promise<RedditPost[]> {
-  // Reddit shut down public RSS (Nov 2026). Keep a short URL ladder for any
-  // residual/compatible mirrors; expect 404 from www.reddit.com itself.
+  // Prefer Redlisten Free when configured (no Reddit account / OAuth).
+  if (REDLISTEN_API_KEY) {
+    return fetchViaRedlisten([subreddit]);
+  }
+
+  // Reddit shut down public RSS (Nov 2026). Ladder kept for completeness.
   const urls = [
     `${REDDIT_BASE}/r/${subreddit}/.rss`,
     `${REDDIT_BASE}/r/${subreddit}/hot/.rss`,
@@ -199,7 +240,7 @@ async function fetchViaRss(subreddit: string): Promise<RedditPost[]> {
   }
 
   throw new Error(
-    `RSS fetch r/${subreddit} failed (Reddit public RSS shut down Nov 2026). ${errors.join('; ')}`
+    `RSS fetch r/${subreddit} failed. Set REDLISTEN_API_KEY (Free, no card) or restore a feed source. ${errors.join('; ')}`
   );
 }
 
@@ -254,6 +295,23 @@ async function fetchAllSubredditsDirect(
   subreddits: string[],
   oauthToken?: string
 ): Promise<FetchResult> {
+  // Redlisten Free: batch into few Atom requests (1 credit each) instead of N.
+  if (REDLISTEN_API_KEY) {
+    const errors: string[] = [];
+    const posts: RedditPost[] = [];
+    for (let i = 0; i < subreddits.length; i += REDLISTEN_BATCH_SIZE) {
+      const batch = subreddits.slice(i, i + REDLISTEN_BATCH_SIZE);
+      try {
+        posts.push(...(await fetchViaRedlisten(batch)));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`redlisten r/${batch.join('+')}: ${msg}`);
+        console.error('[reddit] Redlisten batch failed:', err);
+      }
+    }
+    return { posts, errors };
+  }
+
   const results = await Promise.allSettled(
     subreddits.map((sub) => fetchSubreddit(sub, oauthToken))
   );
@@ -273,9 +331,7 @@ async function fetchAllSubredditsDirect(
 }
 
 async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
-  // Prefer proxy when configured (Netlify IPs historically avoided Reddit blocks).
-  // After Reddit shut down public RSS (Nov 2026), the proxy often returns 0 posts —
-  // fall through to OAuth/direct so configured credentials still work.
+  // Prefer proxy when configured (Netlify hosts Redlisten key in production).
   if (REDDIT_PROXY_URL) {
     const url = `${REDDIT_PROXY_URL}?subreddits=${encodeURIComponent(subreddits.join(','))}`;
     console.log('[reddit] Using external proxy for subreddits:', subreddits.join(', '));
@@ -294,7 +350,7 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
         }
         const posts = data.posts ?? [];
         if (posts.length > 0) return { posts, errors };
-        console.warn('[reddit] proxy returned 0 posts; falling back to OAuth/direct/RSS');
+        console.warn('[reddit] proxy returned 0 posts; falling back to direct/Redlisten/OAuth');
       }
     } catch (err) {
       console.error('[reddit] proxy failed, falling back:', err);
@@ -302,9 +358,9 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
   }
 
   const direct = await fetchAllSubredditsDirect(subreddits, oauthToken);
-  if (direct.posts.length === 0 && !oauthToken) {
+  if (direct.posts.length === 0 && !oauthToken && !REDLISTEN_API_KEY) {
     direct.errors.push(
-      'No Reddit posts fetched. Public RSS was shut down (Nov 2026) and unauthenticated .json is blocked. Set REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET Edge Function secrets.'
+      'No Reddit posts fetched. Set REDLISTEN_API_KEY (Free at https://app.redlisten.com — no card, no auto Pro) on Edge + Netlify.'
     );
   }
   return direct;
