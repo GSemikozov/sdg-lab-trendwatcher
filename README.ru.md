@@ -236,7 +236,7 @@ src/
 2. **Netlify `reddit-proxy`** — батчит сабы; failed/empty батчи восстанавливает внутри proxy (OAuth **если настроен**, иначе RSS). Нужен `REDDIT_PROXY_SECRET`. Задай Edge `REDDIT_PROXY_URL` на задеплоенную функцию. Неоднозначный/пустой ответ после Redlisten → Edge `skipRedlisten`.
 3. **Reddit OAuth / direct JSON** — **опционально**. Только если есть Reddit-приложение и `REDDIT_CLIENT_ID`/`SECRET` на **Edge и Netlify**. Без Reddit-аккаунта — Redlisten (+ RSS, сейчас мёртв).
 
-**Auth до траты квоты:** UI шлёт Bearer, который handler проверяет (exact `SUPABASE_ANON_KEY`, JWKS ES256 или optional `SUPABASE_JWT_SECRET`/`JWT_SECRET` HS256) + `space_id`. pg_cron all-spaces — `x-cron-secret` из Vault (`daily_report_cron_secret`) = Edge `CRON_SECRET` (миграция `014`). Поддельные payload-only JWT отклоняются даже с `--no-verify-jwt`.
+**Auth до траты квоты:** UI шлёт Bearer, который handler проверяет (exact `SUPABASE_ANON_KEY`, JWKS ES256 или Edge `JWT_SECRET` HS256) + `space_id`. pg_cron all-spaces — `x-cron-secret` из Vault (`daily_report_cron_secret`) = Edge `CRON_SECRET` (миграция `014`). Поддельные payload-only JWT отклоняются даже с `--no-verify-jwt`.
 
 Бесплатный ключ: https://app.redlisten.com — **Netlify**: `REDLISTEN_API_KEY`, `REDDIT_PROXY_SECRET` (+ опциональный OAuth); **Edge**: то же + `REDDIT_PROXY_URL` + `CRON_SECRET`.
 

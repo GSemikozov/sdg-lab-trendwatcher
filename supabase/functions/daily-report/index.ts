@@ -7,9 +7,9 @@
  * Auth (before any Redlisten / reddit-proxy spend):
  * - Cron / all-spaces: `x-cron-secret` or Bearer must match Edge `CRON_SECRET`,
  *   or Bearer must equal the service-role key (timing-safe compare).
- * - Manual: cryptographically verified JWT (JWKS ES256 and/or `SUPABASE_JWT_SECRET` /
- *   `JWT_SECRET` HS256) with role `anon`|`authenticated` and valid `exp`, OR Bearer
- *   exactly equal to `SUPABASE_ANON_KEY` (legacy anon JWT as shared secret).
+ * - Manual: cryptographically verified JWT (JWKS ES256 and/or Edge `JWT_SECRET` HS256)
+ *   with role `anon`|`authenticated` and valid `exp`, OR Bearer exactly equal to
+ *   `SUPABASE_ANON_KEY` (legacy anon JWT as shared secret).
  *   Deploy may use `--no-verify-jwt` so cron can send x-cron-secret; the handler
  *   still verifies manual callers before Redlisten spend. Forged payload-only JWTs
  *   are rejected.
@@ -201,8 +201,8 @@ async function verifyManualJwtRole(
       if (payload) break;
     }
   } else if (header.alg === 'HS256') {
-    const secret =
-      Deno.env.get('SUPABASE_JWT_SECRET')?.trim() || Deno.env.get('JWT_SECRET')?.trim() || '';
+    // Edge forbids custom secrets named SUPABASE_*; use JWT_SECRET (= legacy JWT secret).
+    const secret = Deno.env.get('JWT_SECRET')?.trim() || '';
     if (secret) {
       payload = await verifyHs256Jwt(bearer, secret);
     }
