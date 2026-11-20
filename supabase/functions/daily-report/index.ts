@@ -4,7 +4,12 @@
  * Triggered by pg_cron (daily) or manual HTTP call.
  * Supports multi-space: each space has its own subreddits, recipients, and domain prompt.
  *
- * Manual call: POST with { space_id, subreddits?, emailRecipients? }
+ * Auth (before any Redlisten / reddit-proxy spend):
+ * - Cron / all-spaces: `x-cron-secret` or Bearer must match Edge `CRON_SECRET`
+ *   (or Bearer = service role).
+ * - Manual: valid project JWT (anon/authenticated) + existing active `space_id`.
+ *
+ * Manual call: POST with { space_id, emailRecipients? } — subreddits come from DB.
  * Cron call: POST with empty body → processes ALL active spaces sequentially.
  */
 
@@ -19,8 +24,96 @@ const USER_AGENT = 'web:TrendWatcher:v1.0 (by /u/sdglab)';
 const REDDIT_PROXY_URL = Deno.env.get('REDDIT_PROXY_URL');
 const REDDIT_PROXY_SECRET = Deno.env.get('REDDIT_PROXY_SECRET');
 const REDLISTEN_API_KEY = Deno.env.get('REDLISTEN_API_KEY');
+const CRON_SECRET = Deno.env.get('CRON_SECRET');
 /** Free plan: 1k req/mo — batch subs into one Atom call when possible. */
 const REDLISTEN_BATCH_SIZE = 8;
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers':
+    'authorization, x-client-info, apikey, content-type, x-cron-secret',
+};
+
+class RedlistenQuotaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RedlistenQuotaError';
+  }
+}
+
+function timingSafeEqualString(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return mismatch === 0;
+}
+
+function bearerFromAuthorization(header: string | null): string {
+  if (!header) return '';
+  const m = header.match(/^Bearer\s+(.+)$/i);
+  return m?.[1]?.trim() ?? '';
+}
+
+function decodeJwtRole(token: string): string | undefined {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return undefined;
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    const parsed = JSON.parse(json) as { role?: string };
+    return typeof parsed.role === 'string' ? parsed.role : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type RequestAuth =
+  | { kind: 'cron' }
+  | { kind: 'manual'; role: 'anon' | 'authenticated' };
+
+function jsonError(status: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * Authenticate before Redlisten / proxy. Cron is a separate secret; manual is JWT + space ACL.
+ */
+function authorizeDailyReportRequest(
+  req: Request,
+  serviceRoleKey: string
+): RequestAuth | Response {
+  const cronHeader = (req.headers.get('x-cron-secret') ?? '').trim();
+  const bearer = bearerFromAuthorization(req.headers.get('Authorization'));
+
+  if (CRON_SECRET) {
+    if (cronHeader && timingSafeEqualString(cronHeader, CRON_SECRET)) {
+      return { kind: 'cron' };
+    }
+    if (bearer && timingSafeEqualString(bearer, CRON_SECRET)) {
+      return { kind: 'cron' };
+    }
+  }
+
+  if (bearer && timingSafeEqualString(bearer, serviceRoleKey)) {
+    return { kind: 'cron' };
+  }
+
+  if (!bearer) {
+    return jsonError(
+      401,
+      'Unauthorized: send Authorization Bearer (manual) or x-cron-secret (cron) before report generation'
+    );
+  }
+
+  const role = decodeJwtRole(bearer);
+  if (role === 'service_role') return { kind: 'cron' };
+  if (role === 'authenticated') return { kind: 'manual', role: 'authenticated' };
+  if (role === 'anon') return { kind: 'manual', role: 'anon' };
+
+  return jsonError(401, 'Unauthorized: invalid or unrecognized credentials');
+}
 
 interface RedditPost {
   id: string;
@@ -191,8 +284,8 @@ async function fetchViaRedlisten(subreddits: string[]): Promise<RedditPost[]> {
   });
   const text = await res.text();
   if (res.status === 429) {
-    throw new Error(
-      `Redlisten Free quota exceeded (pauses until next UTC month; no auto-charge to Pro). ${text.slice(0, 160)}`
+    throw new RedlistenQuotaError(
+      `Redlisten Free quota exceeded (upstream rejects until next UTC month; no auto-charge to Pro). ${text.slice(0, 160)}`
     );
   }
   if (!res.ok) {
@@ -313,8 +406,16 @@ async function fetchAllSubredditsDirect(
     const errors: string[] = [];
     const posts: RedditPost[] = [];
     const recoverSubs: string[] = [];
+    let redlistenQuotaExhausted = false;
     for (let i = 0; i < subreddits.length; i += REDLISTEN_BATCH_SIZE) {
       const batch = subreddits.slice(i, i + REDLISTEN_BATCH_SIZE);
+      if (redlistenQuotaExhausted) {
+        errors.push(
+          `redlisten r/${batch.join('+')}: skipped after upstream 429; recovering via OAuth/direct`
+        );
+        recoverSubs.push(...batch);
+        continue;
+      }
       try {
         const batchPosts = await fetchViaRedlisten(batch);
         if (batchPosts.length === 0) {
@@ -325,7 +426,14 @@ async function fetchAllSubredditsDirect(
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`redlisten r/${batch.join('+')}: ${msg}; recovering via OAuth/direct`);
+        if (err instanceof RedlistenQuotaError) {
+          redlistenQuotaExhausted = true;
+          errors.push(
+            `redlisten r/${batch.join('+')}: ${msg}; stopping further Redlisten batches this run`
+          );
+        } else {
+          errors.push(`redlisten r/${batch.join('+')}: ${msg}; recovering via OAuth/direct`);
+        }
         console.error('[reddit] Redlisten batch failed:', err);
         recoverSubs.push(...batch);
       }
@@ -914,11 +1022,6 @@ async function processSpace(
 
 // --- Handler ---
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -932,68 +1035,72 @@ Deno.serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
     if (!openaiKey) {
-      return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not set' }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonError(500, 'OPENAI_API_KEY not set');
     }
 
     if (!supabaseUrl || !supabaseKey) {
-      return new Response(JSON.stringify({ error: 'Supabase credentials not set' }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonError(500, 'Supabase credentials not set');
     }
 
-    const redditClientId = Deno.env.get('REDDIT_CLIENT_ID');
-    const redditClientSecret = Deno.env.get('REDDIT_CLIENT_SECRET');
-
-    let oauthToken: string | undefined;
-    if (redditClientId && redditClientSecret) {
-      try {
-        oauthToken = await getRedditOAuthToken(redditClientId, redditClientSecret);
-      } catch (err) {
-        console.error('[reddit] OAuth failed, falling back to unauthenticated:', err);
-      }
-    }
+    // Gate Redlisten / proxy spend: auth before body side-effects and feed fetches.
+    const auth = authorizeDailyReportRequest(req, supabaseKey);
+    if (auth instanceof Response) return auth;
 
     // Parse request body
     let requestSpaceId: string | undefined;
-    let bodySubreddits: string[] | undefined;
     let bodyRecipients: string[] | undefined;
 
     if (req.method === 'POST') {
       try {
         const body = await req.json();
         requestSpaceId = body.space_id;
-        if (body.subreddits?.length > 0) bodySubreddits = body.subreddits;
         if (Array.isArray(body.emailRecipients) && body.emailRecipients.length > 0)
           bodyRecipients = body.emailRecipients;
       } catch {
-        // empty body — process all spaces
+        // empty body — process all spaces (cron only)
       }
     }
 
-    // Build list of spaces to process
+    if (auth.kind === 'manual' && !requestSpaceId) {
+      return jsonError(
+        403,
+        'Forbidden: manual callers must pass space_id; all-spaces runs require cron credentials'
+      );
+    }
+
+    // Optional Reddit OAuth — only after auth (legacy recovery; not required without a Reddit account).
+    const redditClientId = Deno.env.get('REDDIT_CLIENT_ID');
+    const redditClientSecret = Deno.env.get('REDDIT_CLIENT_SECRET');
+    let oauthToken: string | undefined;
+    if (redditClientId && redditClientSecret) {
+      try {
+        oauthToken = await getRedditOAuthToken(redditClientId, redditClientSecret);
+      } catch (err) {
+        console.error('[reddit] OAuth failed, falling back to Redlisten/RSS:', err);
+      }
+    }
+
+    // Build list of spaces to process (subreddits always from DB — not caller-supplied).
     const spacesToProcess: SpaceConfig[] = [];
 
     if (requestSpaceId) {
-      // Manual call with specific space_id
       const spaceRes = await fetch(
-        `${supabaseUrl}/rest/v1/spaces?id=eq.${requestSpaceId}&select=id,name,domain_prompt,subreddits,email_recipients`,
+        `${supabaseUrl}/rest/v1/spaces?id=eq.${encodeURIComponent(requestSpaceId)}&is_active=eq.true&select=id,name,domain_prompt,subreddits,email_recipients`,
         { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
       );
       if (spaceRes.ok) {
         const rows = await spaceRes.json();
         if (rows.length > 0) {
           const space = rows[0] as SpaceConfig;
-          if (bodySubreddits) space.subreddits = bodySubreddits;
           if (bodyRecipients) space.email_recipients = bodyRecipients;
           spacesToProcess.push(space);
         }
       }
+      if (spacesToProcess.length === 0) {
+        return jsonError(403, 'Forbidden: space not found, inactive, or not accessible');
+      }
     } else {
-      // Cron or no space_id — process all active spaces
+      // Cron all-spaces path
       const spacesRes = await fetch(
         `${supabaseUrl}/rest/v1/spaces?is_active=eq.true&select=id,name,domain_prompt,subreddits,email_recipients&order=created_at.asc`,
         { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
@@ -1005,10 +1112,7 @@ Deno.serve(async (req) => {
     }
 
     if (spacesToProcess.length === 0) {
-      return new Response(JSON.stringify({ error: 'No spaces found to process' }), {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonError(404, 'No spaces found to process');
     }
 
     console.log(

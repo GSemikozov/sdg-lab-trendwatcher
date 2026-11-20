@@ -1,0 +1,23 @@
+-- 014_cron_secret_header.sql
+-- daily-report all-spaces (cron) requires x-cron-secret matching Edge CRON_SECRET
+-- (or Authorization Bearer = service role / CRON_SECRET). Manual UI calls use anon JWT + space_id.
+--
+-- After setting Edge secret CRON_SECRET, update cron job headers in the SQL editor
+-- (do NOT commit the real secret). Example shape:
+--
+--   update cron.job
+--   set command = replace(
+--     command,
+--     '"Authorization": "Bearer <anon-jwt>"',
+--     '"Authorization": "Bearer <anon-jwt>", "x-cron-secret": "<CRON_SECRET>"'
+--   )
+--   where jobname in (
+--     'daily-trendwatcher-report',
+--     'weekly-trendwatcher-report',
+--     'monthly-trendwatcher-report'
+--   );
+--
+-- Prefer recreating schedules via cron.schedule with headers jsonb that includes
+-- x-cron-secret once the secret exists in your operator notes / vault — never in git.
+
+select 1;

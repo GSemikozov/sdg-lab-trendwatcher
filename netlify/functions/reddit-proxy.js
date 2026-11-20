@@ -11,11 +11,15 @@ import { timingSafeEqual } from 'node:crypto';
 //
 // Primary path (no Reddit account): Redlisten Free RSS mirror
 //   REDLISTEN_API_KEY → api.redlisten.com (Atom, same layout as old reddit.com RSS)
-// Free plan: 1,000 req/month, 50 items/page. Quota exhaustion → 429 pause until next
-// UTC month. No auto-upgrade / no auto-charge to Pro (upgrade is manual only).
+// Free plan: 1,000 req/month, 50 items/page. On upstream 429 we stop further Redlisten
+// batches in this invocation (legacy OAuth/RSS recovery only). Redlisten itself rejects
+// until the next UTC month — we do not claim a separate app-level pause across runs.
+// No auto-upgrade / no auto-charge to Pro (upgrade is manual only).
 //
-// Optional: Reddit OAuth (REDDIT_CLIENT_ID/SECRET) if ever available.
-// Last resort: www.reddit.com RSS (dead since Nov 2026, kept for ladder completeness).
+// Optional Reddit OAuth (REDDIT_CLIENT_ID/SECRET on Netlify) — only if you have a Reddit
+// app; not required when using Redlisten Free. Without OAuth, empty/failed batches fall
+// back to public RSS (dead since Nov 2026) only.
+// Last resort: www.reddit.com RSS (kept for ladder completeness).
 
 const PERIOD_HOURS = 48;
 const MAX_POSTS = 100;
@@ -180,9 +184,11 @@ async function fetchViaRedlisten(subreddits, apiKey) {
   });
   const text = await res.text().catch(() => '');
   if (res.status === 429) {
-    throw new Error(
-      `Redlisten Free quota exceeded (paused until next UTC month; no auto-charge). ${text.slice(0, 160)}`
+    const err = new Error(
+      `Redlisten Free quota exceeded (upstream rejects until next UTC month; no auto-charge). ${text.slice(0, 160)}`
     );
+    err.code = 'REDLISTEN_QUOTA';
+    throw err;
   }
   if (!res.ok) {
     throw new Error(`Redlisten ${res.status} ${text.slice(0, 160)}`);
@@ -292,7 +298,15 @@ export const handler = async (event) => {
     // 1) Redlisten Free (preferred — no Reddit account)
     if (redlistenKey) {
       const recoverSubs = [];
+      let redlistenQuotaExhausted = false;
       for (const batch of chunk(subreddits, REDLISTEN_BATCH_SIZE)) {
+        if (redlistenQuotaExhausted) {
+          errors.push(
+            `redlisten r/${batch.join('+')}: skipped after upstream 429; recovering via OAuth/RSS`
+          );
+          recoverSubs.push(...batch);
+          continue;
+        }
         try {
           const posts = await fetchViaRedlisten(batch, redlistenKey);
           if (posts.length === 0) {
@@ -304,9 +318,17 @@ export const handler = async (event) => {
             allPosts.push(...posts);
           }
         } catch (err) {
-          errors.push(
-            `redlisten r/${batch.join('+')}: ${err instanceof Error ? err.message : String(err)}; recovering via OAuth/RSS (no Redlisten retry)`
-          );
+          const msg = err instanceof Error ? err.message : String(err);
+          if (err && err.code === 'REDLISTEN_QUOTA') {
+            redlistenQuotaExhausted = true;
+            errors.push(
+              `redlisten r/${batch.join('+')}: ${msg}; stopping further Redlisten batches this run`
+            );
+          } else {
+            errors.push(
+              `redlisten r/${batch.join('+')}: ${msg}; recovering via OAuth/RSS (no Redlisten retry)`
+            );
+          }
           recoverSubs.push(...batch);
         }
       }

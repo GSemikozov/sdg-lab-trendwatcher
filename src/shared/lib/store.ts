@@ -32,9 +32,22 @@ async function invokeEdgeFunction(body: Record<string, unknown>): Promise<Record
   const functionsUrl = import.meta.env.DEV ? import.meta.env.VITE_FUNCTIONS_URL : undefined;
 
   if (functionsUrl) {
+    const anonJwt = (import.meta.env.VITE_SUPABASE_ANON_JWT as string | undefined)?.trim();
+    const anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token || anonJwt || anonKey;
+    if (!token) {
+      throw new Error('Missing Supabase anon JWT for local daily-report auth');
+    }
     const res = await fetch(`${functionsUrl}/daily-report`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        apikey: token,
+      },
       body: JSON.stringify(body),
     });
     const data = await res.json();
