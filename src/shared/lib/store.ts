@@ -4,7 +4,6 @@ import {
   loadSpaces,
   reportStorage,
 } from '@shared/api';
-import { supabase } from '@shared/api/supabase';
 import type { Report, Space } from '@shared/lib/types';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
@@ -28,38 +27,8 @@ interface AppStore {
   clearError: () => void;
 }
 
-async function invokeEdgeFunction(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const functionsUrl = import.meta.env.DEV ? import.meta.env.VITE_FUNCTIONS_URL : undefined;
-
-  if (functionsUrl) {
-    const res = await fetch(`${functionsUrl}/daily-report`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error((data as { error?: string })?.error || `HTTP ${res.status}`);
-    return data;
-  }
-
-  const { data, error } = await supabase.functions.invoke('daily-report', { body });
-  if (error) throw new Error(error.message || 'Edge Function call failed');
-  return data;
-}
-
-function buildReportBody(activeSpaceId: string | null, spaces: Space[]): Record<string, unknown> {
-  if (!activeSpaceId) throw new Error('No space selected');
-
-  const space = spaces.find((s) => s.id === activeSpaceId);
-  if (!space) throw new Error('Space not found');
-
-  const subreddits = space.subreddits.filter(Boolean);
-  if (subreddits.length === 0) throw new Error('No subreddits configured for this space');
-
-  const body: Record<string, unknown> = { space_id: activeSpaceId, subreddits };
-  if (space.emailRecipients.length > 0) body.emailRecipients = space.emailRecipients;
-  return body;
-}
+// Note: invokeEdgeFunction / buildReportBody removed while service-hold stubs
+// generateReport. Restored on PR #2 (cursor/audit-fix-sdg-lab-mvp-2c22).
 
 export const useAppStore = create<AppStore>()(
   devtools(
