@@ -101,6 +101,19 @@ describe('useAppStore', () => {
   it('should handle Edge Function error', async () => {
     setActiveSpace();
     mockInvoke.mockResolvedValue({ data: null, error: { message: 'Function failed' } });
+    mockGetAll.mockResolvedValue([
+      {
+        id: 'existing-after-fail',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 2,
+        summary: 'Still here',
+        signals: [],
+        rawPostCount: { lonely: 2 },
+        spaceId: mockSpace.id,
+      },
+    ]);
 
     const { generateReport } = useAppStore.getState();
     const result = await generateReport();
@@ -108,6 +121,46 @@ describe('useAppStore', () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe('Function failed');
     expect(useAppStore.getState().error).toBe('Function failed');
+    expect(useAppStore.getState().reports[0]?.id).toBe('existing-after-fail');
+  });
+
+  it('should restore reports when generate fails after invalidating an overlapping load', async () => {
+    setActiveSpace();
+    let resolveInitialLoad: (value: unknown[]) => void = () => {};
+    let getAllCalls = 0;
+    mockGetAll.mockImplementation(() => {
+      getAllCalls += 1;
+      if (getAllCalls === 1) {
+        return new Promise((resolve) => {
+          resolveInitialLoad = resolve;
+        });
+      }
+      return Promise.resolve([
+        {
+          id: 'restored-existing',
+          createdAt: new Date().toISOString(),
+          dateRange: { from: '', to: '' },
+          subreddits: ['lonely'],
+          totalPostsAnalyzed: 3,
+          summary: 'Restored',
+          signals: [],
+          rawPostCount: { lonely: 3 },
+          spaceId: mockSpace.id,
+        },
+      ]);
+    });
+    mockInvoke.mockResolvedValue({ data: { success: false, error: 'boom' }, error: null });
+
+    const loadPromise = useAppStore.getState().loadReports();
+    await vi.waitFor(() => expect(getAllCalls).toBe(1));
+
+    const result = await useAppStore.getState().generateReport();
+    expect(result.success).toBe(false);
+    expect(useAppStore.getState().reports[0]?.id).toBe('restored-existing');
+
+    resolveInitialLoad([]);
+    await loadPromise;
+    expect(useAppStore.getState().reports[0]?.id).toBe('restored-existing');
   });
 
   it('should update space settings', () => {

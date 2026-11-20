@@ -201,6 +201,17 @@ export const useAppStore = create<AppStore>()(
             const message = err instanceof Error ? err.message : 'Failed to generate report';
             if (stillCurrent()) {
               set({ error: message, isLoading: false });
+              // Startup bumped reportsFreshness and may have discarded an overlapping load —
+              // reload so existing reports are not left blank after a failed generate.
+              try {
+                const reports = await reportStorage.getAll(spaceIdAtStart ?? undefined);
+                if (stillCurrent()) {
+                  set({ reports });
+                  reportsFreshness += 1;
+                }
+              } catch (reloadErr) {
+                console.error('generateReport failure reload:', reloadErr);
+              }
             }
             console.error('generateReport error:', err);
             return { success: false, error: message };
