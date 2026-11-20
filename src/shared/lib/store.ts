@@ -112,22 +112,29 @@ export const useAppStore = create<AppStore>()(
 
         generateReport: async () => {
           set({ isGenerating: true, error: null });
+          const spaceIdAtStart = get().activeSpaceId;
           try {
-            const { activeSpaceId, spaces } = get();
-            const body = buildReportBody(activeSpaceId, spaces);
+            const { spaces } = get();
+            const body = buildReportBody(spaceIdAtStart, spaces);
 
             const data = await invokeEdgeFunction(body);
             if (!data?.success) {
               throw new Error((data?.error as string) || 'Report generation failed');
             }
 
-            const reports = await reportStorage.getAll(activeSpaceId ?? undefined);
+            const reports = await reportStorage.getAll(spaceIdAtStart ?? undefined);
+            // User may have switched spaces while generation was in flight — don't clobber.
+            if (get().activeSpaceId !== spaceIdAtStart) {
+              return { success: true };
+            }
             set({ reports });
 
             return { success: true };
           } catch (err) {
             const message = err instanceof Error ? err.message : 'Failed to generate report';
-            set({ error: message });
+            if (get().activeSpaceId === spaceIdAtStart) {
+              set({ error: message });
+            }
             console.error('generateReport error:', err);
             return { success: false, error: message };
           } finally {

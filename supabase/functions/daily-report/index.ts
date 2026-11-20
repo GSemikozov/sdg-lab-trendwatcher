@@ -209,9 +209,11 @@ async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<R
     try {
       const posts = await fetchWithOAuth(subreddit, oauthToken);
       console.log(`[reddit] r/${subreddit}: OAuth OK, ${posts.length} posts`);
-      return posts;
+      if (posts.length > 0) return posts;
+      console.warn(`[reddit] r/${subreddit}: OAuth returned 0 posts; falling through to direct/RSS`);
     } catch (err) {
-      console.error(`[reddit] r/${subreddit}: OAuth failed:`, err);
+      // Catch listing/network/parse failures and continue to direct → RSS.
+      console.error(`[reddit] r/${subreddit}: OAuth listing failed, falling through:`, err);
     }
   }
 
@@ -219,7 +221,8 @@ async function fetchSubreddit(subreddit: string, oauthToken?: string): Promise<R
   try {
     const posts = await fetchDirect(subreddit);
     console.log(`[reddit] r/${subreddit}: direct OK, ${posts.length} posts`);
-    return posts;
+    if (posts.length > 0) return posts;
+    console.warn(`[reddit] r/${subreddit}: direct returned 0 posts; trying RSS`);
   } catch (err) {
     console.error(`[reddit] r/${subreddit}: direct failed:`, err);
   }

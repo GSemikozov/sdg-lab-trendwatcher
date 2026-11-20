@@ -152,4 +152,54 @@ describe('useAppStore', () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe('No space selected');
   });
+
+  it('should not replace reports if active space changed during generation', async () => {
+    setActiveSpace();
+    let resolveInvoke: (value: { data: { success: boolean }; error: null }) => void = () => {};
+    mockInvoke.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInvoke = resolve;
+        })
+    );
+    mockGetAll.mockResolvedValue([
+      {
+        id: 'stale-report',
+        createdAt: new Date().toISOString(),
+        dateRange: { from: '', to: '' },
+        subreddits: ['lonely'],
+        totalPostsAnalyzed: 1,
+        summary: 'From space A',
+        signals: [],
+        rawPostCount: { lonely: 1 },
+        spaceId: mockSpace.id,
+      },
+    ]);
+
+    const pending = useAppStore.getState().generateReport();
+
+    useAppStore.setState({
+      activeSpaceId: 'space-b',
+      reports: [
+        {
+          id: 'space-b-report',
+          createdAt: new Date().toISOString(),
+          dateRange: { from: '', to: '' },
+          subreddits: ['anxiety'],
+          totalPostsAnalyzed: 2,
+          summary: 'From space B',
+          signals: [],
+          rawPostCount: { anxiety: 2 },
+          spaceId: 'space-b',
+        },
+      ],
+    });
+
+    resolveInvoke({ data: { success: true }, error: null });
+    const result = await pending;
+
+    expect(result.success).toBe(true);
+    expect(useAppStore.getState().reports).toHaveLength(1);
+    expect(useAppStore.getState().reports[0]?.id).toBe('space-b-report');
+  });
 });

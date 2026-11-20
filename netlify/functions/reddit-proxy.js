@@ -142,7 +142,7 @@ async function fetchViaRss(subreddit) {
   return { posts: [], errors };
 }
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   try {
     const subParam = event.queryStringParameters?.subreddits || '';
     const subreddits = subParam
@@ -179,9 +179,16 @@ exports.handler = async (event) => {
     for (const subreddit of subreddits) {
       try {
         if (oauthToken) {
-          const posts = await fetchViaOAuth(subreddit, oauthToken);
-          allPosts.push(...posts);
-          continue;
+          try {
+            const posts = await fetchViaOAuth(subreddit, oauthToken);
+            allPosts.push(...posts);
+            continue;
+          } catch (err) {
+            errors.push(
+              `r/${subreddit}: oauth listing failed (${err instanceof Error ? err.message : String(err)}); trying RSS`
+            );
+            // Fall through to RSS instead of skipping the subreddit entirely.
+          }
         }
         const { posts, errors: rssErrors } = await fetchViaRss(subreddit);
         allPosts.push(...posts);
