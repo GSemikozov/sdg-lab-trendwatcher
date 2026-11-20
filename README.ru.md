@@ -211,8 +211,8 @@ src/
 Публичный RSS Reddit отключён (Nov 2026), JSON без логина с cloud IP — 403. TrendWatcher использует:
 
 1. **Redlisten Free** (если задан `REDLISTEN_API_KEY`) — `api.redlisten.com/.../new.rss`. Без Reddit-аккаунта. Free: 1 000 запросов/мес; сверх квоты — пауза до следующего UTC-месяца, **без авто-апгрейда на Pro и без автосписаний**.
-2. **Netlify `reddit-proxy`** — батчит сабы. Нужен общий `REDDIT_PROXY_SECRET` (Bearer) Edge → proxy, иначе публичные вызовы сожгут Free-квоту.
-3. **Reddit OAuth / direct JSON** — когда `REDLISTEN_API_KEY` **нет**, и как per-sub recovery после failed/empty Redlisten-батча (без повторной траты Redlisten-кредитов). Это не всегда включённый параллельный путь.
+2. **Netlify `reddit-proxy`** — батчит сабы; failed/empty батчи восстанавливает через OAuth/RSS **внутри proxy** (без retry Redlisten). Нужен `REDDIT_PROXY_SECRET`. Если proxy вернул 0 постов после Redlisten, Edge делает recovery с `skipRedlisten` — Free-кредиты не тратятся дважды.
+3. **Reddit OAuth / direct JSON** — когда `REDLISTEN_API_KEY` **нет**, и как per-sub recovery после failed/empty Redlisten-батча (без повторной траты Redlisten-кредитов).
 
 Бесплатный ключ (без карты): https://app.redlisten.com — `REDLISTEN_API_KEY` + одинаковый `REDDIT_PROXY_SECRET` в Netlify и Supabase Edge secrets.
 

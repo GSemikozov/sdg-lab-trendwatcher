@@ -215,8 +215,8 @@ src/
 Reddit shut down public RSS (Nov 2026) and blocks unauthenticated JSON from cloud IPs. TrendWatcher uses:
 
 1. **Redlisten Free** (preferred when `REDLISTEN_API_KEY` is set) — `api.redlisten.com/.../new.rss`. No Reddit account. Free: 1,000 requests/month; over quota pauses until the next UTC month — **no auto-upgrade / no auto-charge to Pro**.
-2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls. Requires shared `REDDIT_PROXY_SECRET` (Bearer) from Edge → proxy so public callers cannot burn Free credits.
-3. **Reddit OAuth / direct JSON** — used when `REDLISTEN_API_KEY` is **absent**, and as per-sub recovery after a failed/empty Redlisten batch (without re-spending Redlisten credits). Not a silent always-on parallel path.
+2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls; failed/empty batches recover via OAuth/RSS **inside the proxy** (no Redlisten retry). Requires shared `REDDIT_PROXY_SECRET` (Bearer). If the proxy returns 0 posts after Redlisten, Edge recovers with `skipRedlisten` so Free credits are not spent twice.
+3. **Reddit OAuth / direct JSON** — used when `REDLISTEN_API_KEY` is **absent**, and as per-sub recovery after a failed/empty Redlisten batch (without re-spending Redlisten credits).
 
 Sign up Free (no card): https://app.redlisten.com — set `REDLISTEN_API_KEY` + matching `REDDIT_PROXY_SECRET` on Netlify and Supabase Edge secrets.
 

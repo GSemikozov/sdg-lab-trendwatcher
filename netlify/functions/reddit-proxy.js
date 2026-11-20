@@ -262,32 +262,7 @@ export const handler = async (event) => {
     const clientId = process.env.REDDIT_CLIENT_ID;
     const clientSecret = process.env.REDDIT_CLIENT_SECRET;
 
-    // 1) Redlisten Free (preferred — no Reddit account)
-    if (redlistenKey) {
-      for (const batch of chunk(subreddits, REDLISTEN_BATCH_SIZE)) {
-        try {
-          const posts = await fetchViaRedlisten(batch, redlistenKey);
-          allPosts.push(...posts);
-          if (posts.length === 0) {
-            errors.push(`redlisten r/${batch.join('+')}: empty feed`);
-          }
-        } catch (err) {
-          errors.push(`redlisten r/${batch.join('+')}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ posts: allPosts, errors, source: 'redlisten' }),
-      };
-    }
-
-    errors.push(
-      'REDLISTEN_API_KEY not set (Free key from https://app.redlisten.com — no card, no auto Pro)'
-    );
-
-    // 2) Optional Reddit OAuth
+    // Optional Reddit OAuth (legacy recovery / path without Redlisten)
     let oauthToken = null;
     if (clientId && clientSecret) {
       try {
@@ -297,25 +272,77 @@ export const handler = async (event) => {
       }
     }
 
+    async function recoverSubViaLegacy(subreddit) {
+      if (oauthToken) {
+        try {
+          const posts = await fetchViaOAuth(subreddit, oauthToken);
+          if (posts.length > 0) return posts;
+          errors.push(`r/${subreddit}: oauth returned 0 posts; trying RSS`);
+        } catch (err) {
+          errors.push(
+            `r/${subreddit}: oauth listing failed (${err instanceof Error ? err.message : String(err)}); trying RSS`
+          );
+        }
+      }
+      const { posts, errors: rssErrors } = await fetchViaRedditRss(subreddit);
+      errors.push(...rssErrors.map((e) => `r/${subreddit}: ${e}`));
+      return posts;
+    }
+
+    // 1) Redlisten Free (preferred — no Reddit account)
+    if (redlistenKey) {
+      const recoverSubs = [];
+      for (const batch of chunk(subreddits, REDLISTEN_BATCH_SIZE)) {
+        try {
+          const posts = await fetchViaRedlisten(batch, redlistenKey);
+          if (posts.length === 0) {
+            errors.push(
+              `redlisten r/${batch.join('+')}: empty feed; recovering via OAuth/RSS (no Redlisten retry)`
+            );
+            recoverSubs.push(...batch);
+          } else {
+            allPosts.push(...posts);
+          }
+        } catch (err) {
+          errors.push(
+            `redlisten r/${batch.join('+')}: ${err instanceof Error ? err.message : String(err)}; recovering via OAuth/RSS (no Redlisten retry)`
+          );
+          recoverSubs.push(...batch);
+        }
+      }
+
+      // Per-sub legacy recovery for failed/empty batches — never re-hit Redlisten.
+      for (const subreddit of recoverSubs) {
+        try {
+          allPosts.push(...(await recoverSubViaLegacy(subreddit)));
+        } catch (err) {
+          errors.push(
+            `r/${subreddit} recovery: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json' },
+        // source stays redlisten* so Edge must not re-spend Free credits on fallback.
+        body: JSON.stringify({
+          posts: allPosts,
+          errors,
+          source: recoverSubs.length > 0 ? 'redlisten+legacy' : 'redlisten',
+          redlistenAttempted: true,
+        }),
+      };
+    }
+
+    errors.push(
+      'REDLISTEN_API_KEY not set (Free key from https://app.redlisten.com — no card, no auto Pro)'
+    );
+
+    // 2) No Redlisten — full OAuth/RSS ladder per sub
     for (const subreddit of subreddits) {
       try {
-        if (oauthToken) {
-          try {
-            const posts = await fetchViaOAuth(subreddit, oauthToken);
-            if (posts.length > 0) {
-              allPosts.push(...posts);
-              continue;
-            }
-            errors.push(`r/${subreddit}: oauth returned 0 posts; trying RSS`);
-          } catch (err) {
-            errors.push(
-              `r/${subreddit}: oauth listing failed (${err instanceof Error ? err.message : String(err)}); trying RSS`
-            );
-          }
-        }
-        const { posts, errors: rssErrors } = await fetchViaRedditRss(subreddit);
-        allPosts.push(...posts);
-        errors.push(...rssErrors.map((e) => `r/${subreddit}: ${e}`));
+        allPosts.push(...(await recoverSubViaLegacy(subreddit)));
       } catch (err) {
         errors.push(`r/${subreddit}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -324,7 +351,12 @@ export const handler = async (event) => {
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ posts: allPosts, errors, source: oauthToken ? 'oauth+rss' : 'rss' }),
+      body: JSON.stringify({
+        posts: allPosts,
+        errors,
+        source: oauthToken ? 'oauth+rss' : 'rss',
+        redlistenAttempted: false,
+      }),
     };
   } catch (err) {
     return {

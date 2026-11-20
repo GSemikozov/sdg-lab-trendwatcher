@@ -286,6 +286,8 @@ async function fetchSubreddit(
 interface FetchResult {
   posts: RedditPost[];
   errors: string[];
+  source?: string;
+  redlistenAttempted?: boolean;
 }
 
 // --- Embeddings ---
@@ -302,10 +304,12 @@ interface PostEmbeddingPayload {
 
 async function fetchAllSubredditsDirect(
   subreddits: string[],
-  oauthToken?: string
+  oauthToken?: string,
+  opts?: { skipRedlisten?: boolean }
 ): Promise<FetchResult> {
   // Redlisten Free: batch into few Atom requests (1 credit each) instead of N.
-  if (REDLISTEN_API_KEY) {
+  // skipRedlisten: proxy already spent Free credits — recover via OAuth/direct only.
+  if (REDLISTEN_API_KEY && !opts?.skipRedlisten) {
     const errors: string[] = [];
     const posts: RedditPost[] = [];
     const recoverSubs: string[] = [];
@@ -345,11 +349,11 @@ async function fetchAllSubredditsDirect(
       }
     }
 
-    return { posts, errors };
+    return { posts, errors, source: 'redlisten', redlistenAttempted: true };
   }
 
   const results = await Promise.allSettled(
-    subreddits.map((sub) => fetchSubreddit(sub, oauthToken))
+    subreddits.map((sub) => fetchSubreddit(sub, oauthToken, { skipRedlisten: opts?.skipRedlisten }))
   );
   const errors: string[] = [];
 
@@ -363,7 +367,12 @@ async function fetchAllSubredditsDirect(
   }
 
   const posts = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
-  return { posts, errors };
+  return {
+    posts,
+    errors,
+    source: opts?.skipRedlisten ? 'legacy-after-redlisten' : 'legacy',
+    redlistenAttempted: Boolean(opts?.skipRedlisten),
+  };
 }
 
 async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
@@ -388,13 +397,35 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
           const text = await res.text().catch(() => '');
           console.error(`[reddit] proxy HTTP ${res.status}: ${text.slice(0, 200)}`);
         } else {
-          const data = (await res.json()) as { posts: RedditPost[]; errors?: string[] };
+          const data = (await res.json()) as {
+            posts: RedditPost[];
+            errors?: string[];
+            source?: string;
+            redlistenAttempted?: boolean;
+          };
           const errors = data.errors ?? [];
           if (errors.length > 0) {
             for (const e of errors) console.error('[reddit-proxy]', e);
           }
           const posts = data.posts ?? [];
-          if (posts.length > 0) return { posts, errors };
+          if (posts.length > 0) {
+            return {
+              posts,
+              errors,
+              source: data.source,
+              redlistenAttempted: data.redlistenAttempted,
+            };
+          }
+          // Empty proxy: if Redlisten was already attempted there, do NOT re-spend Free credits.
+          const redlistenAlready =
+            data.redlistenAttempted === true ||
+            (typeof data.source === 'string' && data.source.startsWith('redlisten'));
+          if (redlistenAlready) {
+            console.warn(
+              '[reddit] proxy returned 0 posts after Redlisten; recovering via OAuth/direct only (no Redlisten retry)'
+            );
+            return fetchAllSubredditsDirect(subreddits, oauthToken, { skipRedlisten: true });
+          }
           console.warn('[reddit] proxy returned 0 posts; falling back to direct/Redlisten/OAuth');
         }
       } catch (err) {
