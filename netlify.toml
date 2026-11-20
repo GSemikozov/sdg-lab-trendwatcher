@@ -4,6 +4,14 @@
 
 [build.environment]
   NODE_VERSION = "22"
+  # Repo uses npm (package-lock.json). yarn.lock was stale dual-lockfile noise.
+  NETLIFY_USE_YARN = "false"
+  # pg_cron migrations embed the legacy anon JWT (same as 009). Omit from secrets scan.
+  SECRETS_SCAN_OMIT_PATHS = "supabase/migrations/**,.env.example"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
 
 [[redirects]]
   from = "/*"

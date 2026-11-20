@@ -62,7 +62,7 @@ function parseRssPosts(xml, subreddit) {
   return posts;
 }
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   try {
     const REDDIT_BASE = 'https://www.reddit.com';
     const subParam = event.queryStringParameters.subreddits || '';
