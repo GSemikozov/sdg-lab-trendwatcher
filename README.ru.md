@@ -88,6 +88,9 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 REDLISTEN_API_KEY=
 # Общий секрет Edge ↔ Netlify reddit-proxy (нужен при использовании proxy)
 REDDIT_PROXY_SECRET=
+# Supabase Edge secret: абсолютный URL задеплоенной Netlify-функции, напр.
+# https://<site>.netlify.app/.netlify/functions/reddit-proxy
+REDDIT_PROXY_URL=
 
 # Reddit OAuth (опциональный legacy без Redlisten / recovery после failed batch)
 REDDIT_CLIENT_ID=
@@ -211,10 +214,10 @@ src/
 Публичный RSS Reddit отключён (Nov 2026), JSON без логина с cloud IP — 403. TrendWatcher использует:
 
 1. **Redlisten Free** (если задан `REDLISTEN_API_KEY`) — `api.redlisten.com/.../new.rss`. Без Reddit-аккаунта. Free: 1 000 запросов/мес; сверх квоты — пауза до следующего UTC-месяца, **без авто-апгрейда на Pro и без автосписаний**.
-2. **Netlify `reddit-proxy`** — батчит сабы; failed/empty батчи восстанавливает через OAuth/RSS **внутри proxy** (без retry Redlisten). Нужен `REDDIT_PROXY_SECRET`. Если proxy вернул 0 постов после Redlisten, Edge делает recovery с `skipRedlisten` — Free-кредиты не тратятся дважды.
+2. **Netlify `reddit-proxy`** — батчит сабы; failed/empty батчи восстанавливает через OAuth/RSS **внутри proxy** (без retry Redlisten). Нужен `REDDIT_PROXY_SECRET`. В Supabase Edge задай `REDDIT_PROXY_URL` на задеплоенную функцию (`https://<site>.netlify.app/.netlify/functions/reddit-proxy`). Если proxy вернул 0 постов после Redlisten — или ответ неоднозначен (транспорт/JSON) — Edge делает recovery с `skipRedlisten`, Free-кредиты не тратятся дважды.
 3. **Reddit OAuth / direct JSON** — когда `REDLISTEN_API_KEY` **нет**, и как per-sub recovery после failed/empty Redlisten-батча (без повторной траты Redlisten-кредитов).
 
-Бесплатный ключ (без карты): https://app.redlisten.com — `REDLISTEN_API_KEY` + одинаковый `REDDIT_PROXY_SECRET` в Netlify и Supabase Edge secrets.
+Бесплатный ключ (без карты): https://app.redlisten.com — на **Netlify**: `REDLISTEN_API_KEY`, `REDDIT_PROXY_SECRET`; на **Supabase Edge**: те же два + `REDDIT_PROXY_URL` (URL proxy выше).
 
 ### AI-анализ: почему LLM, а не эмбеддинги
 

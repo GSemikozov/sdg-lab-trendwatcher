@@ -88,6 +88,9 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 REDLISTEN_API_KEY=
 # Shared secret Edge ↔ Netlify reddit-proxy (required when using the proxy)
 REDDIT_PROXY_SECRET=
+# Supabase Edge secret: absolute URL of the deployed Netlify function, e.g.
+# https://<site>.netlify.app/.netlify/functions/reddit-proxy
+REDDIT_PROXY_URL=
 
 # Reddit OAuth (optional legacy when Redlisten absent / batch recovery)
 REDDIT_CLIENT_ID=
@@ -215,10 +218,10 @@ src/
 Reddit shut down public RSS (Nov 2026) and blocks unauthenticated JSON from cloud IPs. TrendWatcher uses:
 
 1. **Redlisten Free** (preferred when `REDLISTEN_API_KEY` is set) — `api.redlisten.com/.../new.rss`. No Reddit account. Free: 1,000 requests/month; over quota pauses until the next UTC month — **no auto-upgrade / no auto-charge to Pro**.
-2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls; failed/empty batches recover via OAuth/RSS **inside the proxy** (no Redlisten retry). Requires shared `REDDIT_PROXY_SECRET` (Bearer). If the proxy returns 0 posts after Redlisten, Edge recovers with `skipRedlisten` so Free credits are not spent twice.
+2. **Netlify `reddit-proxy`** — batches subreddits into few Redlisten calls; failed/empty batches recover via OAuth/RSS **inside the proxy** (no Redlisten retry). Requires shared `REDDIT_PROXY_SECRET` (Bearer). Point Supabase Edge `REDDIT_PROXY_URL` at the deployed function (`https://<site>.netlify.app/.netlify/functions/reddit-proxy`). If the proxy returns 0 posts after Redlisten — or the response is ambiguous (transport/JSON loss) — Edge recovers with `skipRedlisten` so Free credits are not spent twice.
 3. **Reddit OAuth / direct JSON** — used when `REDLISTEN_API_KEY` is **absent**, and as per-sub recovery after a failed/empty Redlisten batch (without re-spending Redlisten credits).
 
-Sign up Free (no card): https://app.redlisten.com — set `REDLISTEN_API_KEY` + matching `REDDIT_PROXY_SECRET` on Netlify and Supabase Edge secrets.
+Sign up Free (no card): https://app.redlisten.com — set on **Netlify**: `REDLISTEN_API_KEY`, `REDDIT_PROXY_SECRET`; on **Supabase Edge**: the same two plus `REDDIT_PROXY_URL` (deployed proxy URL above).
 
 ### AI Analysis: Why LLM, Not Embeddings
 

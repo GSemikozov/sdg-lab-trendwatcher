@@ -377,6 +377,10 @@ async function fetchAllSubredditsDirect(
 
 async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Promise<FetchResult> {
   // Prefer proxy when configured (Netlify hosts Redlisten key in production).
+  // Ambiguous proxy outcomes (transport/body loss, non-auth HTTP errors) must not
+  // re-run Redlisten on Edge — the proxy may already have spent Free credits.
+  let skipRedlistenOnFallback = false;
+
   if (REDDIT_PROXY_URL) {
     if (!REDDIT_PROXY_SECRET) {
       console.warn(
@@ -396,13 +400,24 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
         if (!res.ok) {
           const text = await res.text().catch(() => '');
           console.error(`[reddit] proxy HTTP ${res.status}: ${text.slice(0, 200)}`);
+          // Auth rejection happens before Redlisten; other statuses are ambiguous.
+          if (res.status !== 401 && res.status !== 403) {
+            skipRedlistenOnFallback = true;
+          }
         } else {
-          const data = (await res.json()) as {
+          let data: {
             posts: RedditPost[];
             errors?: string[];
             source?: string;
             redlistenAttempted?: boolean;
           };
+          try {
+            data = (await res.json()) as typeof data;
+          } catch (parseErr) {
+            console.error('[reddit] proxy JSON undecodable; skipping Redlisten on fallback:', parseErr);
+            skipRedlistenOnFallback = true;
+            data = { posts: [] };
+          }
           const errors = data.errors ?? [];
           if (errors.length > 0) {
             for (const e of errors) console.error('[reddit-proxy]', e);
@@ -416,25 +431,29 @@ async function fetchAllSubreddits(subreddits: string[], oauthToken?: string): Pr
               redlistenAttempted: data.redlistenAttempted,
             };
           }
-          // Empty proxy: if Redlisten was already attempted there, do NOT re-spend Free credits.
+          // Empty or undecoded proxy: if Redlisten was (or may have been) attempted, do NOT re-spend.
           const redlistenAlready =
+            skipRedlistenOnFallback ||
             data.redlistenAttempted === true ||
             (typeof data.source === 'string' && data.source.startsWith('redlisten'));
           if (redlistenAlready) {
             console.warn(
-              '[reddit] proxy returned 0 posts after Redlisten; recovering via OAuth/direct only (no Redlisten retry)'
+              '[reddit] proxy returned 0 posts after Redlisten/ambiguous body; recovering via OAuth/direct only (no Redlisten retry)'
             );
             return fetchAllSubredditsDirect(subreddits, oauthToken, { skipRedlisten: true });
           }
           console.warn('[reddit] proxy returned 0 posts; falling back to direct/Redlisten/OAuth');
         }
       } catch (err) {
-        console.error('[reddit] proxy failed, falling back:', err);
+        console.error('[reddit] proxy failed (ambiguous); skipping Redlisten on fallback:', err);
+        skipRedlistenOnFallback = true;
       }
     }
   }
 
-  const direct = await fetchAllSubredditsDirect(subreddits, oauthToken);
+  const direct = await fetchAllSubredditsDirect(subreddits, oauthToken, {
+    skipRedlisten: skipRedlistenOnFallback,
+  });
   if (direct.posts.length === 0 && !oauthToken && !REDLISTEN_API_KEY) {
     direct.errors.push(
       'No Reddit posts fetched. Set REDLISTEN_API_KEY (Free at https://app.redlisten.com — no card, no auto Pro) on Edge + Netlify.'
