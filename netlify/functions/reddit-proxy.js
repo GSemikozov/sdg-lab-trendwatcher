@@ -100,7 +100,12 @@ function parseRssPosts(xml, defaultSubreddit) {
     if (createdUtc < cutoff) continue;
 
     const fromLink = link.match(/\/r\/([^/]+)\//)?.[1];
-    const subreddit = fromLink || defaultSubreddit.split('+')[0] || defaultSubreddit;
+    // Lowercase so counts match configured subreddit names.
+    const subreddit = (
+      fromLink ||
+      defaultSubreddit.split('+')[0] ||
+      defaultSubreddit
+    ).toLowerCase();
 
     posts.push({
       id,

@@ -88,26 +88,23 @@ export function SpaceDashboardPage() {
     }
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load aggregate reports when space is ready
-  useEffect(() => {
-    if (space && activeSpaceId === space.id) {
-      loadAllAggReports(space.id);
-    }
-  }, [space?.id, activeSpaceId, loadAllAggReports]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on space change
+  // Reset then load in one effect so epoch bump cannot invalidate a load that already captured it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: space sync + aggregate refresh
   useEffect(() => {
     setWeeklyReports([]);
     setMonthlyReports([]);
     setAggError(null);
-    // Bump epochs/ids so late settles from a prior visit cannot clear flags or overwrite lists.
     aggNavEpochRef.current += 1;
     weeklyRunIdRef.current += 1;
     monthlyRunIdRef.current += 1;
     setWeeklyGenerating(false);
     setMonthlyGenerating(false);
     setCreativeStatus(null);
-  }, [activeSpaceId]);
+
+    if (space && activeSpaceId === space.id) {
+      void loadAllAggReports(space.id);
+    }
+  }, [space?.id, activeSpaceId, loadAllAggReports]);
 
   const handleGenerateAggregate = async (periodType: PeriodType) => {
     if (!space) return;

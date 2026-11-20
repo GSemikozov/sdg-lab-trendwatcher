@@ -400,6 +400,48 @@ describe('useAppStore', () => {
     expect(useAppStore.getState().reports[0]?.id).toBe('newer-gen');
   });
 
+  it('should clear isLoading when generate overlaps an in-flight loadReports', async () => {
+    setActiveSpace();
+    let resolveInitialLoad: (value: unknown[]) => void = () => {};
+    let getAllCalls = 0;
+    mockGetAll.mockImplementation(() => {
+      getAllCalls += 1;
+      if (getAllCalls === 1) {
+        return new Promise((resolve) => {
+          resolveInitialLoad = resolve;
+        });
+      }
+      return Promise.resolve([
+        {
+          id: 'gen-report',
+          createdAt: new Date().toISOString(),
+          dateRange: { from: '', to: '' },
+          subreddits: ['lonely'],
+          totalPostsAnalyzed: 2,
+          summary: 'Generated',
+          signals: [],
+          rawPostCount: { lonely: 2 },
+          spaceId: mockSpace.id,
+        },
+      ]);
+    });
+    mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
+
+    const loadPromise = useAppStore.getState().loadReports();
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().isLoading).toBe(true);
+    });
+
+    await useAppStore.getState().generateReport();
+    expect(useAppStore.getState().isLoading).toBe(false);
+    expect(useAppStore.getState().reports[0]?.id).toBe('gen-report');
+
+    resolveInitialLoad([]);
+    await loadPromise;
+    expect(useAppStore.getState().isLoading).toBe(false);
+    expect(useAppStore.getState().reports[0]?.id).toBe('gen-report');
+  });
+
   it('should not let a late loadReports overwrite generateReport results', async () => {
     setActiveSpace();
     let resolveInitialLoad: (value: unknown[]) => void = () => {};

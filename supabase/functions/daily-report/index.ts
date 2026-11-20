@@ -5,9 +5,11 @@
  * Supports multi-space: each space has its own subreddits, recipients, and domain prompt.
  *
  * Auth (before any Redlisten / reddit-proxy spend):
- * - Cron / all-spaces: `x-cron-secret` or Bearer must match Edge `CRON_SECRET`
- *   (or Bearer = service role).
- * - Manual: valid project JWT (anon/authenticated) + existing active `space_id`.
+ * - Cron / all-spaces: `x-cron-secret` or Bearer must match Edge `CRON_SECRET`,
+ *   or Bearer must equal the service-role key (timing-safe compare).
+ * - Manual: Authorization Bearer whose JWT *payload* role is `anon` or `authenticated`
+ *   (payload decode only — no signature/exp verify here; rely on gateway + `space_id`
+ *   active-space check). Forged `service_role` payloads are not treated as cron.
  *
  * Manual call: POST with { space_id, emailRecipients? } — subreddits come from DB.
  * Cron call: POST with empty body → processes ALL active spaces sequentially.
@@ -107,8 +109,8 @@ function authorizeDailyReportRequest(
     );
   }
 
+  // Payload role only (unverified). Cron service_role must match the real key above.
   const role = decodeJwtRole(bearer);
-  if (role === 'service_role') return { kind: 'cron' };
   if (role === 'authenticated') return { kind: 'manual', role: 'authenticated' };
   if (role === 'anon') return { kind: 'manual', role: 'anon' };
 
@@ -249,7 +251,12 @@ function parseRssPosts(xml: string, defaultSubreddit: string): RedditPost[] {
     if (createdUtc < cutoff) continue;
 
     const fromLink = link.match(/\/r\/([^/]+)\//)?.[1];
-    const subreddit = fromLink || defaultSubreddit.split('+')[0] || defaultSubreddit;
+    // Lowercase so raw_post_count matches configured subreddit names.
+    const subreddit = (
+      fromLink ||
+      defaultSubreddit.split('+')[0] ||
+      defaultSubreddit
+    ).toLowerCase();
 
     posts.push({
       id,

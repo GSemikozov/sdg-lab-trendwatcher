@@ -82,14 +82,19 @@ let navigationEpoch = 0;
  * Shared reports-write freshness for loadReports + generateReport.
  * Bumped on navigation and when generation starts so a late initial load cannot
  * overwrite a newer generate refresh (and older generates lose to newer ones).
+ * Does NOT own isLoading — that uses loadOwnerSeq so generate can invalidate
+ * writes without leaving skeletons stuck.
  */
 let reportsFreshness = 0;
+/** Latest loadReports call; only that owner clears isLoading in finally. */
+let loadOwnerSeq = 0;
 
 /** Test-only: reset module guards between cases. */
 export function __resetStoreGenerationGuardsForTests() {
   generateReportPending = 0;
   navigationEpoch = 0;
   reportsFreshness = 0;
+  loadOwnerSeq = 0;
 }
 
 export const useAppStore = create<AppStore>()(
@@ -128,6 +133,7 @@ export const useAppStore = create<AppStore>()(
           if (!spaceId) return;
           const epochAtStart = navigationEpoch;
           const freshnessAtStart = reportsFreshness;
+          const ownerAtStart = ++loadOwnerSeq;
 
           const hasCache = get().reports.length > 0;
           if (!hasCache) {
@@ -136,14 +142,14 @@ export const useAppStore = create<AppStore>()(
           set({ error: null });
           try {
             const reports = await reportStorage.getAll(spaceId);
+            // Freshness guards writes only — a concurrent generate must not leave skeletons.
             if (
-              navigationEpoch !== epochAtStart ||
-              reportsFreshness !== freshnessAtStart ||
-              get().activeSpaceId !== spaceId
+              navigationEpoch === epochAtStart &&
+              reportsFreshness === freshnessAtStart &&
+              get().activeSpaceId === spaceId
             ) {
-              return;
+              set({ reports });
             }
-            set({ reports });
           } catch (err) {
             if (
               navigationEpoch === epochAtStart &&
@@ -154,11 +160,7 @@ export const useAppStore = create<AppStore>()(
             }
             console.error('loadReports error:', err);
           } finally {
-            if (
-              navigationEpoch === epochAtStart &&
-              reportsFreshness === freshnessAtStart &&
-              get().activeSpaceId === spaceId
-            ) {
+            if (loadOwnerSeq === ownerAtStart && get().activeSpaceId === spaceId) {
               set({ isLoading: false });
             }
           }
@@ -166,7 +168,7 @@ export const useAppStore = create<AppStore>()(
 
         generateReport: async () => {
           generateReportPending += 1;
-          // Invalidate any in-flight loadReports for this space before we refresh.
+          // Invalidate in-flight load *writes* (not load ownership / isLoading).
           reportsFreshness += 1;
           set({ isGenerating: true, error: null });
           const spaceIdAtStart = get().activeSpaceId;
@@ -190,13 +192,13 @@ export const useAppStore = create<AppStore>()(
             if (!stillCurrent()) {
               return { success: true };
             }
-            set({ reports });
+            set({ reports, isLoading: false });
 
             return { success: true };
           } catch (err) {
             const message = err instanceof Error ? err.message : 'Failed to generate report';
             if (stillCurrent()) {
-              set({ error: message });
+              set({ error: message, isLoading: false });
             }
             console.error('generateReport error:', err);
             return { success: false, error: message };
